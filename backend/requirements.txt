@@ -1,0 +1,28 @@
+# Lenny Growth Assistant — backend runtime dependencies
+# Pinned for reproducibility. Update deliberately, not incidentally.
+
+fastapi==0.116.2
+uvicorn[standard]==0.52.4
+pydantic==2.13.4
+pydantic-settings==2.15.0
+
+# Persistence
+SQLAlchemy[asyncio]==2.0.52
+asyncpg==0.31.0
+alembic==1.19.1
+pgvector==0.5.0
+
+# Observability
+structlog==26.1.0
+
+# HTTP + parsing
+httpx==0.28.1
+PyYAML==6.0.3
+
+# Artifact security
+bleach==6.4.0
+tinycss2==1.5.1                 # CSS value parsing for bleach.css_sanitizer
+
+# Cloud model providers (optional at runtime; import is lazy)
+anthropic==1.0.0
+openai==3.3.1
