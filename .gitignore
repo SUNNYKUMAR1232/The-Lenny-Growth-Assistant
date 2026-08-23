@@ -1,0 +1,40 @@
+# Secrets / local config
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+
+# Transcript corpus (cloned by `make transcripts`, ~26MB — not vendored)
+data/transcripts/*
+!data/transcripts/.gitkeep
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+htmlcov/
+.coverage
+
+# Node / Next.js
+node_modules/
+.next/
+out/
+.turbo/
+*.tsbuildinfo
+npm-debug.log*
+yarn-error.log*
+
+# Editors / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Next.js generated
+next-env.d.ts
