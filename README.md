@@ -33,6 +33,27 @@ episode deep links, and an artifact in the sandboxed viewer — are in
 
 ---
 
+## Setup in one command
+
+Clone the repo, then run the script for your platform. It checks prerequisites, writes
+`.env`, pulls the local models, fetches the transcripts, starts the stack, and indexes the
+knowledge base — everything in [section 4](#4-quick-start-docker), in one step.
+
+```bash
+./scripts/setup.sh            # macOS / Linux
+```
+
+```powershell
+.\scripts\setup.ps1           # Windows
+```
+
+Then open <http://localhost:3000>. Add `--full` (`-Full` on Windows) to index all 303
+episodes instead of the 25-episode demo corpus. Full options are in
+[section 4](#4-quick-start-docker); the manual steps are there too, if you would rather run
+them yourself.
+
+---
+
 ## Table of contents
 
 1. [What it does](#1-what-it-does)
@@ -151,6 +172,48 @@ Full detail — schema, boundaries, failure handling, why each choice was made �
 
 ## 4. Quick start (Docker)
 
+**One command.** `scripts/setup.sh` (macOS/Linux) and `scripts/setup.ps1` (Windows) do
+every step in this section for you: check prerequisites, write `.env`, pull the models,
+fetch the transcripts, start the stack, and index the knowledge base. They are idempotent
+— a re-run after a failure resumes instead of starting over.
+
+```bash
+git clone <this-repo> lenny-growth-assistant
+cd lenny-growth-assistant
+./scripts/setup.sh
+```
+
+```powershell
+git clone <this-repo> lenny-growth-assistant
+cd lenny-growth-assistant
+.\scripts\setup.ps1
+```
+
+Both take the same options:
+
+| macOS / Linux | Windows | Effect |
+|---|---|---|
+| *(default)* | *(default)* | index 25 episodes — a demo corpus, a few minutes |
+| `--full` | `-Full` | index all 303 episodes (~21,700 chunks; takes a while) |
+| `--episodes 50` | `-Episodes 50` | choose the corpus size yourself |
+| `--force` | `-Force` | re-chunk and re-embed what is already indexed |
+| `--skip-models` | `-SkipModels` | Ollama already has the models, or you want a cloud model |
+| `--skip-transcripts` | `-SkipTranscripts` | transcripts are already in `data/transcripts/episodes` |
+
+Use `--force` after changing `EMBEDDING_PROVIDER` or the chunk size: the vectors already in
+Postgres were produced by the *old* embedder, and mixing embedders in one index silently
+degrades retrieval rather than failing.
+
+If PowerShell refuses to run the script, that is the execution policy, not the script.
+Allow it for that window only:
+
+```powershell
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+```
+
+<details>
+<summary><b>Prefer to run the steps yourself?</b></summary>
+
 ```bash
 git clone <this-repo> lenny-growth-assistant
 cd lenny-growth-assistant
@@ -183,6 +246,8 @@ curl -s localhost:8000/health | python3 -m json.tool
 #                                 "embeddings": {"status": "ok", ...}}}
 ```
 
+</details>
+
 If `model` is `degraded`, Ollama is not reachable from the container — see
 [Troubleshooting](#13-troubleshooting).
 
@@ -209,6 +274,10 @@ make dev-frontend       # terminal 2 → http://localhost:3000
 ---
 
 ## 5b. Running on Windows (Command Prompt)
+
+> Most people should use `.\scripts\setup.ps1` from [section 4](#4-quick-start-docker)
+> instead — it does everything below in one command. The rest of this section is the
+> manual path, and the reference for what the script actually does.
 
 `make` does not exist in `cmd`, so run what the Makefile would. Docker Desktop is the
 easiest path.
@@ -463,6 +532,8 @@ Full annotated list in [`.env.example`](.env.example). The ones that matter:
 
 ```bash
 make help            # every target, described
+make setup           # one-command setup: models, transcripts, stack, knowledge base
+make setup-full      # same, but index all 303 episodes instead of 25
 make up / down       # start / stop the Docker stack
 make logs            # tail all service logs
 make transcripts     # clone or update the transcript archive
@@ -719,9 +790,12 @@ lenny-growth-assistant/
 ├── skills/
 │   ├── ship30/SKILL.md    the Ship 30 writing standard  ← editable without touching code
 │   └── artifact/SKILL.md  artifact generation rules
+├── scripts/
+│   ├── setup.sh           one-command setup for macOS / Linux
+│   └── setup.ps1          the same for Windows PowerShell
 ├── docs/                  PRD · architecture · design · demo script · manual test plan
 ├── agent-transcripts/     how this was built with an AI coding agent, including the bugs
-├── data/transcripts/      corpus (gitignored, fetched by `make transcripts`)
+├── data/transcripts/      corpus (gitignored, fetched by `scripts/setup.*` or `make transcripts`)
 ├── docker-compose.yml
 ├── Makefile
 └── .env.example

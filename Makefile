@@ -104,6 +104,14 @@ typecheck: ## TypeScript type check
 	cd frontend && npm run typecheck
 
 # -------------------------------------------------------------- quickstart
+.PHONY: setup
+setup: ## One command: prerequisites, models, transcripts, stack, knowledge base
+	./scripts/setup.sh
+
+.PHONY: setup-full
+setup-full: ## Same as `setup` but indexes all 303 episodes instead of 25
+	./scripts/setup.sh --full
+
 .PHONY: quickstart
 quickstart: transcripts up ## Transcripts + stack, then tells you what's next
 	@echo ""
@@ -111,3 +119,5 @@ quickstart: transcripts up ## Transcripts + stack, then tells you what's next
 	@echo "  1. ollama serve && ollama pull llama3.1:8b && ollama pull nomic-embed-text"
 	@echo "  2. make ingest-demo"
 	@echo "  3. open http://localhost:3000"
+	@echo ""
+	@echo "Or skip all of that: make setup  (Windows: .\scripts\setup.ps1)"
