@@ -18,7 +18,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy.exc import SQLAlchemyError
 
-from app.api import artifacts, chat, health, ingestion, memory, sessions
+from app.api import artifacts, chat, health, ingestion, memory, model, sessions
 from app.config import settings
 from app.db.database import dispose_engine
 from app.errors import AppError, DatabaseError, ValidationError
@@ -144,6 +144,7 @@ def create_app() -> FastAPI:
 
     for router in (
         health.router,
+        model.router,
         sessions.router,
         chat.router,
         artifacts.router,

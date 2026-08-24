@@ -61,11 +61,18 @@ def _redact(_logger: Any, _name: str, event_dict: dict) -> dict:
     return event_dict
 
 
-def configure_logging() -> None:
+def configure_logging(stream: Any = None) -> None:
+    """Configure structured logging.
+
+    `stream` redirects rendered output (tests assert on what is actually
+    written; an embedding host may want its own sink). When a custom stream is
+    given, logger caching is disabled so the redirect takes effect immediately.
+    """
     logging.basicConfig(
         format="%(message)s",
-        stream=sys.stdout,
+        stream=stream or sys.stdout,
         level=getattr(logging, settings.log_level, logging.INFO),
+        force=True,
     )
     for noisy in ("uvicorn.access", "httpx", "httpcore"):
         logging.getLogger(noisy).setLevel(logging.WARNING)
@@ -90,8 +97,8 @@ def configure_logging() -> None:
         wrapper_class=structlog.make_filtering_bound_logger(
             getattr(logging, settings.log_level, logging.INFO)
         ),
-        logger_factory=structlog.PrintLoggerFactory(),
-        cache_logger_on_first_use=True,
+        logger_factory=structlog.PrintLoggerFactory(file=stream),
+        cache_logger_on_first_use=stream is None,
     )
 
 

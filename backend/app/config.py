@@ -16,7 +16,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
-LLMProviderName = Literal["ollama", "cloud", "stub"]
+LLMProviderName = Literal["ollama", "cloud", "pi", "stub"]
 CloudProviderName = Literal["anthropic", "openai"]
 EmbeddingProviderName = Literal["ollama", "openai", "hash"]
 
@@ -35,6 +35,10 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     log_format: Literal["json", "console"] = "json"
     cors_origins: str = "http://localhost:3000,http://127.0.0.1:3000"
+    # Lets the UI switch model provider / paste an API key at runtime. Handy
+    # for a local evaluation, wrong for a shared deployment — so it defaults
+    # off in production. Keys set this way live in memory only.
+    allow_runtime_model_config: bool = True
 
     # ------------------------------------------------------------- database
     database_url: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/lenny"
@@ -54,6 +58,15 @@ class Settings(BaseSettings):
     anthropic_api_key: str | None = None
     openai_api_key: str | None = None
     openai_base_url: str | None = None
+
+    # ---------------------------------------------------- pi coding agent
+    # The agent-layer integration required by the assignment (Claude Agent SDK
+    # or Pi Coding Agent). Pi is a Node CLI driven headlessly; see
+    # app/llm/pi_agent.py for why it is invoked with every tool disabled.
+    pi_cli_path: str = "pi"
+    pi_provider: str = "anthropic"
+    pi_model: str = "claude-sonnet-4-5"
+    pi_thinking: Literal["off", "minimal", "low", "medium", "high"] = "off"
 
     llm_timeout_seconds: float = 120.0
     llm_max_output_tokens: int = 4096
@@ -136,6 +149,8 @@ class Settings(BaseSettings):
             return f"ollama/{self.ollama_model}"
         if self.llm_provider == "cloud":
             return f"{self.cloud_provider}/{self.cloud_model}"
+        if self.llm_provider == "pi":
+            return f"pi/{self.pi_provider}/{self.pi_model}"
         return "stub/deterministic"
 
 

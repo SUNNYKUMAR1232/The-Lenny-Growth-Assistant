@@ -130,7 +130,8 @@ async def test_cloud_health_without_key_reports_unavailable(monkeypatch) -> None
     monkeypatch.setattr(settings, "openai_api_key", None)
     ok, detail = await CloudProvider(vendor="openai").health()
     assert ok is False
-    assert "OPENAI" in detail
+    assert "openai" in detail.lower()
+    assert "api key" in detail.lower()
 
 
 def test_anthropic_system_prompts_are_hoisted() -> None:
@@ -174,3 +175,112 @@ async def test_stub_refuses_without_evidence() -> None:
         [ChatMessage(role="user", content="anything")], system="no evidence block here"
     )
     assert "don't have transcript evidence" in response.text
+
+
+# --------------------------------------------------------------------------
+# Provider call-shape regression tests.
+#
+# These exist because a real bug shipped past the unit suite: the Anthropic
+# Messages API in SDK 1.x removed `temperature`, so every cloud call raised
+# `TypeError: unexpected keyword argument 'temperature'` and surfaced as a
+# generic "cloud model request failed". Health checks did not catch it (they
+# deliberately make no network call), so the call shape itself is now asserted.
+# --------------------------------------------------------------------------
+
+
+class _FakeUsage:
+    input_tokens = 11
+    output_tokens = 7
+
+
+class _FakeTextBlock:
+    type = "text"
+
+    def __init__(self, text: str) -> None:
+        self.text = text
+
+
+class _FakeResult:
+    stop_reason = "end_turn"
+    usage = _FakeUsage()
+
+    def __init__(self, text: str) -> None:
+        self.content = [_FakeTextBlock(text)]
+
+
+class _FakeMessages:
+    def __init__(self) -> None:
+        self.calls: list[dict] = []
+
+    async def create(self, **kwargs):
+        self.calls.append(kwargs)
+        # Mirror the real SDK: reject parameters it no longer accepts.
+        for removed in ("temperature", "top_p"):
+            if removed in kwargs:
+                raise TypeError(
+                    f"AsyncMessages.create() got an unexpected keyword argument '{removed}'"
+                )
+        return _FakeResult("grounded answer [S1]")
+
+
+class _FakeAnthropic:
+    def __init__(self) -> None:
+        self.messages = _FakeMessages()
+
+
+async def test_anthropic_call_omits_temperature(monkeypatch) -> None:
+    fake = _FakeAnthropic()
+    provider = CloudProvider(vendor="anthropic", model="claude-sonnet-4-5")
+    monkeypatch.setattr(provider, "_anthropic", lambda: fake)
+
+    response = await provider.generate(
+        [ChatMessage(role="user", content="what drives retention?")],
+        system="be grounded",
+        temperature=0.7,
+        max_tokens=256,
+    )
+
+    assert response.text == "grounded answer [S1]"
+    assert response.provider == "anthropic"
+    assert response.output_tokens == 7
+
+    (call,) = fake.messages.calls
+    assert "temperature" not in call
+    assert call["model"] == "claude-sonnet-4-5"
+    assert call["max_tokens"] == 256
+    assert call["system"] == "be grounded"
+    assert call["messages"] == [{"role": "user", "content": "what drives retention?"}]
+
+
+async def test_openai_call_still_sends_temperature(monkeypatch) -> None:
+    """The two vendors differ; the abstraction must not flatten that away."""
+    captured: dict = {}
+
+    class _Completions:
+        async def create(self, **kwargs):
+            captured.update(kwargs)
+
+            class _Choice:
+                finish_reason = "stop"
+
+                class message:  # noqa: N801
+                    content = "ok"
+
+            class _Result:
+                choices = [_Choice()]
+                usage = type("U", (), {"prompt_tokens": 3, "completion_tokens": 2})()
+
+            return _Result()
+
+    class _FakeOpenAI:
+        chat = type("C", (), {"completions": _Completions()})()
+
+    provider = CloudProvider(vendor="openai", model="gpt-4o")
+    monkeypatch.setattr(provider, "_openai", lambda: _FakeOpenAI())
+
+    await provider.generate(
+        [ChatMessage(role="user", content="hi")], temperature=0.25, max_tokens=64
+    )
+
+    assert captured["temperature"] == 0.25
+    assert captured["model"] == "gpt-4o"

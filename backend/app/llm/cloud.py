@@ -14,6 +14,7 @@ from collections.abc import AsyncIterator
 from app.config import settings
 from app.errors import LLMConfigError, LLMError, LLMTimeoutError
 from app.llm.base import ChatMessage, LLMProvider, LLMResponse
+from app.llm.runtime_config import api_key_for, base_url_for
 from app.observability.logging import get_logger
 
 log = get_logger("llm.cloud")
@@ -46,9 +47,11 @@ class CloudProvider(LLMProvider):
 
     # ------------------------------------------------------------- clients
     def _anthropic(self):
-        if not settings.anthropic_api_key:
+        key = api_key_for("anthropic")
+        if not key:
             raise LLMConfigError(
-                "ANTHROPIC_API_KEY is not set. Set it, or run locally with "
+                "No Anthropic API key is configured. Add one in the UI's model "
+                "settings, set ANTHROPIC_API_KEY, or run locally with "
                 "LLM_PROVIDER=ollama.",
                 details={"provider": "anthropic"},
             )
@@ -56,12 +59,18 @@ class CloudProvider(LLMProvider):
             from anthropic import AsyncAnthropic
         except ImportError as exc:  # pragma: no cover
             raise LLMConfigError("The `anthropic` package is not installed.") from exc
-        return AsyncAnthropic(api_key=settings.anthropic_api_key, timeout=self.timeout)
+        base_url = base_url_for("anthropic")
+        kwargs = {"api_key": key, "timeout": self.timeout}
+        if base_url:
+            kwargs["base_url"] = base_url
+        return AsyncAnthropic(**kwargs)
 
     def _openai(self):
-        if not settings.openai_api_key:
+        key = api_key_for("openai")
+        if not key:
             raise LLMConfigError(
-                "OPENAI_API_KEY is not set. Set it, or run locally with "
+                "No OpenAI API key is configured. Add one in the UI's model "
+                "settings, set OPENAI_API_KEY, or run locally with "
                 "LLM_PROVIDER=ollama.",
                 details={"provider": "openai"},
             )
@@ -70,8 +79,10 @@ class CloudProvider(LLMProvider):
         except ImportError as exc:  # pragma: no cover
             raise LLMConfigError("The `openai` package is not installed.") from exc
         return AsyncOpenAI(
-            api_key=settings.openai_api_key,
-            base_url=settings.openai_base_url,
+            api_key=key,
+            # A base URL is how every OpenAI-compatible gateway is reached —
+            # OpenRouter, Together, Groq, vLLM, LM Studio, Azure-style proxies.
+            base_url=base_url_for("openai"),
             timeout=self.timeout,
         )
 
@@ -117,7 +128,12 @@ class CloudProvider(LLMProvider):
                 result = await client.messages.create(
                     model=self.model,
                     max_tokens=tokens,
-                    temperature=temp,
+                    # No `temperature`: the Anthropic Messages API in SDK 1.x
+                    # removed sampling parameters (see ANTHROPIC_TEMPERATURE
+                    # note in .env.example). Passing it raises TypeError, which
+                    # is exactly the failure `test_anthropic_call_omits_
+                    # temperature` locks down. LLM_TEMPERATURE still applies to
+                    # Ollama and OpenAI-compatible providers.
                     system=sys_prompt or "",
                     messages=wire,
                 )
@@ -176,8 +192,7 @@ class CloudProvider(LLMProvider):
                 async with client.messages.stream(
                     model=self.model,
                     max_tokens=tokens,
-                    temperature=temp,
-                    system=sys_prompt or "",
+                    system=sys_prompt or "",  # no `temperature`; see generate()
                     messages=wire,
                 ) as stream:
                     async for piece in stream.text_stream:
@@ -207,12 +222,24 @@ class CloudProvider(LLMProvider):
 
     # -------------------------------------------------------------- health
     async def health(self) -> tuple[bool, str]:
-        key = (
-            settings.anthropic_api_key
-            if self.vendor == "anthropic"
-            else settings.openai_api_key
-        )
+        key = api_key_for(self.vendor)
         if not key:
-            return False, f"{self.vendor.upper()} API key is not configured."
-        # Deliberately no network call: health should be cheap and free.
+            return False, f"No {self.vendor} API key is configured."
+        # Deliberately no network call: /health is polled by the UI and must
+        # stay cheap and free. `POST /api/model/test` is the explicit,
+        # user-initiated round trip that actually verifies the key.
         return True, f"{self.vendor}:{self.model} (key present, not verified)"
+
+    async def verify(self) -> tuple[bool, str]:
+        """One real, minimal round trip — used by the "Test connection" button."""
+        try:
+            response = await self.generate(
+                [ChatMessage(role="user", content="Reply with the single word: ok")],
+                max_tokens=8,
+                temperature=0.0,
+            )
+        except LLMError as exc:
+            return False, exc.message
+        except Exception as exc:  # pragma: no cover - defensive
+            return False, f"Unexpected error: {type(exc).__name__}"
+        return True, f"{self.label()} responded: {response.text.strip()[:40]}"
