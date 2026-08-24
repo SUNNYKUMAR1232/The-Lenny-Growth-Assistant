@@ -18,7 +18,7 @@ Weights default to 0.6 vector / 0.4 keyword (RETRIEVAL_VECTOR_WEIGHT,
 RETRIEVAL_KEYWORD_WEIGHT). Semantic search leads because most questions are
 conceptual paraphrases; keyword is weighted heavily enough to rescue proper
 nouns. Both are env-tunable, and the split is revisited in
-docs/architecture.md#retrieval-weights.
+docs/architecture.md#fusion-weights.
 """
 
 from __future__ import annotations

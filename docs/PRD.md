@@ -247,29 +247,3 @@ memory personalizes, RAG grounds, the agent orchestrates, evidence constrains, t
 validator verifies, the model generates, and the artifact sandbox protects. Each of those
 is a separate, replaceable component with its own tests — that is the deliverable, not the
 chat window.
-
----
-
-## 6. Open questions for the client
-
-1. **Whose memory is it?** Personal to each user, or shared team context ("we are B2B
-   marketplace, seed stage")? The schema supports both; the product decision is theirs.
-2. **How should disagreement be presented?** Guests contradict each other constantly.
-   Today both sides are cited; a "guests disagree" affordance may be better.
-3. **Does the corpus stay closed?** If the team wants their own docs in the same index,
-   provenance labelling ("Lenny's Podcast" vs "internal") becomes a requirement.
-4. **What is the acceptable latency floor?** It decides local vs cloud in production.
-5. **Who operates it after handover, and what is their on-call story?**
-
----
-
-## 7. Positioning
-
-> A controlled AI knowledge assistant that combines evidence-grounded retrieval, persistent
-> user context, specialized skills, model flexibility, and secure artifact generation.
-
-```
-Memory personalizes.       RAG grounds.          Agent orchestrates.
-Evidence constrains.       Validator verifies.   Model generates.
-Artifact sandbox protects.
-```

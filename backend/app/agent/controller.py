@@ -5,7 +5,7 @@
 This is a *controller*, not an autonomous agent. It does not decide its own
 plan, it cannot call arbitrary tools, and it cannot loop. Every turn walks the
 same fixed pipeline with a bounded set of skills. The trade-off is deliberate
-and documented in docs/architecture.md#why-a-controlled-agent: deterministic
+and documented in docs/architecture.md#agent-routing: deterministic
 routing gives predictable latency, unit-testable stages, log lines that map
 one-to-one onto phases, and no chance of a runaway tool loop in front of a
 customer.

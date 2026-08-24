@@ -95,6 +95,50 @@ source (a tab). Nothing important is hidden; nothing verbose is forced.
 | Refused | The refusal reads as a decision, not an error: what is not covered plus what to try instead |
 | Weakly grounded | Amber chip `weakly grounded (2/6)` and an inline note in the answer |
 
+
+### Sources
+
+The single most important UI decision in the product.
+
+```
+› 6 sources from 3 episodes                    ← collapsed by default
+  [S1]  How to know if you have product-market fit
+        Rahul Vohra · chunk 12 · hybrid · score 0.065      [Listen]
+        "We used the Sean Ellis product-market fit…"
+```
+
+Collapsed by default — available in one click, never in the way of reading. The `[S1]` tag
+matches the inline citation, so a reader can trace a specific sentence rather than the
+answer as a whole. The retrieval signal (`hybrid`/`vector`/`keyword`/`episode`) is shown
+because the operator debugging a bad answer needs it. **"Listen" opens the episode at the
+second the quote was said** — verification in two clicks is what makes the grounding claim
+credible instead of decorative. Excerpts clamp to three lines.
+
+### Artifact viewer
+
+Beside the chat, never instead of it — an artifact is a product of the conversation.
+**Preview / Source tabs**: Preview is what you show, Source is what is actually stored, and
+how a reviewer confirms the sanitizer did its job. Sanitization is reported in the header
+("script tags removed · 1 remote URL blocked") because security work the user cannot see
+builds no trust, and a footer states the guarantee: scripts, forms, and network requests are
+disabled. Download yields a real `.html`/`.md` file.
+
+### Model indicator
+
+A header chip: status dot plus provider/model in monospace (`ollama/llama3.1:8b`) — an
+identifier, and the value people read aloud in a demo. Green: reachable. Amber: impaired
+(e.g. embeddings degraded). Red: the selected model is unavailable, with the reason and a
+reminder that there is no automatic cloud fallback. Clicking opens per-dependency health.
+
+### Memory
+
+A right-hand drawer that states its own boundary: *"Personalization only. Never used as
+evidence for what guests said."* Each row shows key, value, type, confidence and importance
+— showing confidence makes the system legible, because memory is *inferred*, not
+transcribed. **Forget** per row and **Forget everything** at the bottom, both immediate. In
+the conversation, personalized answers name the memories used: personalization is disclosed,
+not silent.
+
 ### Empty states
 | Where | Treatment |
 |---|---|
@@ -146,81 +190,7 @@ message list scrolls: header, composer, and artifact chrome stay put.
 
 ---
 
-## 6. Source display
-
-The single most important UI decision in the product.
-
-```
-› 6 sources from 3 episodes                    ← collapsed by default
-  ┌────────────────────────────────────────────────────────┐
-  │ [S1]  How to know if you have product-market fit       │
-  │       Rahul Vohra · chunk 12 · hybrid · score 0.065  [Listen] │
-  │       "We used the Sean Ellis product-market fit…"     │
-  │       Show full excerpt                                │
-  └────────────────────────────────────────────────────────┘
-```
-
-- **Collapsed by default.** Available in one click, never in the way of reading.
-- **The `[S1]` tag matches the inline citation**, so a reader can trace a specific sentence
-  rather than the answer as a whole.
-- **Retrieval signal is shown** (`hybrid` / `vector` / `keyword` / `episode`). Most users
-  will ignore it; the operator debugging a bad answer will not.
-- **"Listen" opens the episode at the second the quote was said.** Verification in two
-  clicks is what makes the grounding claim credible instead of decorative.
-- **Excerpts are clamped to three lines** with a "Show full excerpt" toggle — enough to
-  judge relevance, not enough to bury the answer.
-
----
-
-## 7. Artifact viewer
-
-- **Beside the chat, never instead of it.** An artifact is a product of the conversation.
-- **Preview / Source tabs.** Preview is what you show; Source is what is actually stored —
-  the honest view, and how a reviewer confirms the sanitizer did its job.
-- **Sanitization is reported in the header**: "Sanitized: script tags removed · 1 remote
-  URL(s) blocked". Security work the user cannot see builds no trust.
-- **A footer states the guarantee**: "Rendered in a sandboxed frame: scripts, forms, and
-  network requests are disabled."
-- **Download** yields a real `.html`/`.md` file.
-- Markdown artifacts render in the same typographic system as the chat, so an essay looks
-  like a document rather than a chat message.
-
----
-
-## 8. Model indicator
-
-A chip in the header: a status dot plus the provider/model in monospace
-(`ollama/llama3.1:8b`). Clicking it opens provider, model, embedding provider, and
-per-dependency health with detail strings.
-
-- Green: everything reachable.
-- Amber: running but impaired (e.g. embeddings degraded).
-- Red: the selected model is unavailable, with the reason and a reminder that there is no
-  automatic cloud fallback.
-
-Monospace is deliberate: the model name is an identifier, and it is the value people read
-aloud in a demo.
-
----
-
-## 9. Memory UX
-
-A right-hand drawer, opened from the header.
-
-- Header states the boundary in the product's own words: *"Personalization only. Never used
-  as evidence for what guests said."*
-- Each memory shows its key, value, type, confidence and importance. Showing confidence
-  makes the system legible: users understand that memory is *inferred*, not transcribed.
-- **Forget** on each row; **Forget everything** at the bottom. Both take effect
-  immediately, optimistically, with the API call behind.
-- When memory is disabled by config, the panel says so and confirms the assistant still
-  works.
-- In the conversation, personalized answers carry a line naming the memories used —
-  personalization is disclosed, not silent.
-
----
-
-## 10. Visual system
+## 6. Visual system
 
 | Token | Light | Dark |
 |---|---|---|
@@ -230,18 +200,16 @@ A right-hand drawer, opened from the header.
 | accent | `#4f46e5` | `#818cf8` |
 | ok / warn / danger | `#15803d` / `#b45309` / `#be3030` | `#4ade80` / `#f59e0b` / `#f87171` |
 
-Colours are declared once as RGB triples on `:root` and redefined under `.dark`; no
-component hard-codes a hex value. Theme follows the OS by default, is overridable, persists
-in `localStorage`, and is applied by an inline script before first paint so there is no
-flash of the wrong theme.
+Colours are declared once as RGB triples on `:root`, redefined under `.dark`; no component
+hard-codes a hex. Theme follows the OS, is overridable, persists in `localStorage`, and is
+applied before first paint so there is no flash of the wrong theme.
 
-Type: system sans stack, 15px body / 1.6, monospace only for identifiers (model names,
-memory keys, error codes, source tags). Spacing on a 4px scale; radii 8/12/16px; one
-shadow, used only for overlays.
+Type: system sans stack, 15px body / 1.6, monospace only for identifiers. Spacing on a 4px
+scale; radii 8/12/16px; one shadow, used only for overlays.
 
 ---
 
-## 11. Design decisions worth defending
+## 7. Design decisions worth defending
 
 | Decision | Alternative | Why |
 |---|---|---|

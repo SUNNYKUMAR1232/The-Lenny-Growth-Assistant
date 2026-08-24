@@ -6,29 +6,15 @@ How the Lenny Growth Assistant is built, and why each part is the way it is.
 
 ## Contents
 
-- [System overview](#system-overview)
-- [Component boundaries](#component-boundaries)
-- [Database schema](#database-schema)
-- [Why PostgreSQL and nothing else](#why-postgresql-and-nothing-else)
-- [Ingestion](#ingestion)
-- [Chunking](#chunking)
-- [Retrieval](#retrieval)
-- [Retrieval weights](#retrieval-weights)
-- [The Evidence Pack](#the-evidence-pack)
-- [Embeddings and the honest fallback](#embeddings-and-the-honest-fallback)
-- [Why a controlled agent](#why-a-controlled-agent)
-- [Skills](#skills)
-- [Memory](#memory)
-- [Context builder](#context-builder)
-- [Model gateway](#model-gateway)
-- [Grounding](#grounding)
-- [Artifact security](#artifact-security)
-- [API boundaries](#api-boundaries)
-- [Observability](#observability)
-- [Failure handling](#failure-handling)
-- [Deployment topology](#deployment-topology)
-- [Trade-offs, restated](#trade-offs-restated)
-- [What I would do next](#what-i-would-do-next)
+[System overview](#system-overview) · [Component boundaries](#component-boundaries) ·
+[Database schema](#database-schema) · [Ingestion](#ingestion) · [Chunking](#chunking) ·
+[Retrieval](#retrieval) · [Agent routing](#agent-routing) ·
+[Memory and context](#memory-and-context) · [Model gateway](#model-gateway) ·
+[The agent layer](#the-agent-layer-pi-coding-agent) · [Grounding](#grounding) ·
+[Runtime model configuration](#runtime-model-configuration) ·
+[Artifact security](#artifact-security) · [API boundaries](#api-boundaries) ·
+[Observability](#observability) · [Failure handling](#failure-handling) ·
+[Deployment topology](#deployment-topology)
 
 ---
 
@@ -109,25 +95,15 @@ Two schema decisions worth naming:
   output makes sanitizer bugs debuggable after the fact; storing it in a separate column
   from the one the viewer reads makes it impossible to render by accident.
 
-## Why PostgreSQL and nothing else
-
-> I intentionally avoided unnecessary distributed infrastructure. PostgreSQL serves as the
-> transactional store, the full-text search engine, and the vector store because the
-> dataset and evaluation scope do not justify introducing additional operational
-> dependencies.
-
-Concretely, at ~300 episodes / ~40k chunks:
-
-| Alternative | What it would add | Why it is not worth it here |
-|---|---|---|
-| Dedicated vector DB (Pinecone, Qdrant, Weaviate) | Another service, another client, another failure mode, another backup story | pgvector with HNSW answers in single-digit ms at this size; and chunk↔episode metadata joins stay free instead of becoming an application-side join across two systems |
-| Elasticsearch for BM25 | A JVM service and an index-sync problem | Postgres FTS with `websearch_to_tsquery` + `ts_rank_cd` is enough, and the GENERATED tsvector means there is no sync problem to have |
-| Redis for caching/session state | A second stateful thing to operate | Sessions are durable data, not cache. Nothing here is hot enough to need a cache |
-| Kafka | Event plumbing | There is one synchronous request path |
-
-The honest limit: past roughly a million chunks, or with heavy concurrent ingestion, the
-HNSW build cost and single-writer pressure argue for splitting the vector store out. That
-is a *scale* decision, and the retrieval interface is already the seam where it happens.
+**One database, not a stack.** Postgres is the transactional store, the full-text search
+engine, and the vector store. At ~300 episodes / ~40k chunks, a dedicated vector DB, an
+Elasticsearch cluster or Redis would each add a service, a client, a failure mode and a
+backup story to buy nothing: pgvector with HNSW answers in single-digit milliseconds at this
+size, the GENERATED tsvector means the lexical index cannot drift from the text, and
+chunk↔episode joins stay free instead of becoming an application-side join across two
+systems. The honest limit is roughly a million chunks, or heavy concurrent ingestion, where
+HNSW build cost and single-writer pressure argue for splitting the vector store out — a
+*scale* decision, and the retrieval interface is already the seam where it happens.
 
 ## Ingestion
 
@@ -159,6 +135,25 @@ a human in two clicks — which is the entire point of grounding.
 outro are removed because they are high-frequency, semantically distinctive, and would
 otherwise dominate retrieval for commercial-sounding queries. Nothing a guest said is
 rewritten, and any rule that is unsure keeps the text.
+
+### Embeddings and the honest fallback
+
+Default: `nomic-embed-text` via Ollama, 768 dimensions, matching the schema.
+
+Three providers exist: `ollama`, `openai`, and `hash`. The last is a **deterministic
+hashing embedder** — hashed word n-grams projected into a unit vector. It is not a semantic
+model: "churn" and "retention" are unrelated to it. It exists for two honest reasons:
+
+1. **CI and tests run with no model server**, deterministically, so assertions are about
+   pipeline behaviour rather than model prose.
+2. **Graceful degradation**: if the embedding model disappears mid-session,
+   `EMBEDDING_ALLOW_FALLBACK=true` degrades retrieval to effectively lexical-only rather
+   than failing the request — and the API marks the response `degraded` so the UI can say
+   so. It is never presented as vector-search quality.
+
+`EMBEDDING_DIM` is baked into the schema. Changing the embedding model to one with a
+different width requires a migration and a `--force` re-ingest; the Ollama provider fails
+loudly with exactly that instruction rather than storing truncated vectors.
 
 ## Chunking
 
@@ -205,7 +200,7 @@ match — so "no evidence" would never happen without a floor.
 value is model-dependent: for an embedder whose unrelated-pair similarity sits high, raise
 it to 0.4–0.6. Grounding validation is the model-independent backstop.
 
-## Retrieval weights
+### Fusion weights
 
 Fusion is weighted Reciprocal Rank Fusion, not a blend of raw scores:
 
@@ -231,7 +226,7 @@ score = 0.6 · 1/(60 + vector_rank) + 0.4 · 1/(60 + keyword_rank)
 and another failure mode for a marginal gain at 40k chunks. The interface is the place to
 add one when evaluation shows fusion is the bottleneck.
 
-## The Evidence Pack
+### The Evidence Pack
 
 ```json
 {
@@ -263,26 +258,7 @@ query the database. Consequences:
 4. **Degradation is explicit** — `degraded` + `degraded_reason` travel with the evidence to
    the UI instead of silently changing answer quality.
 
-## Embeddings and the honest fallback
-
-Default: `nomic-embed-text` via Ollama, 768 dimensions, matching the schema.
-
-Three providers exist: `ollama`, `openai`, and `hash`. The last is a **deterministic
-hashing embedder** — hashed word n-grams projected into a unit vector. It is not a semantic
-model: "churn" and "retention" are unrelated to it. It exists for two honest reasons:
-
-1. **CI and tests run with no model server**, deterministically, so assertions are about
-   pipeline behaviour rather than model prose.
-2. **Graceful degradation**: if the embedding model disappears mid-session,
-   `EMBEDDING_ALLOW_FALLBACK=true` degrades retrieval to effectively lexical-only rather
-   than failing the request — and the API marks the response `degraded` so the UI can say
-   so. It is never presented as vector-search quality.
-
-`EMBEDDING_DIM` is baked into the schema. Changing the embedding model to one with a
-different width requires a migration and a `--force` re-ingest; the Ollama provider fails
-loudly with exactly that instruction rather than storing truncated vectors.
-
-## Why a controlled agent
+## Agent routing
 
 > The agent is controlled rather than fully autonomous because deterministic routing and
 > bounded capabilities improve reliability, testing, latency, and operational debugging.
@@ -312,7 +288,7 @@ after reading the first results. That is the trade I would revisit first if eval
 showed multi-hop questions failing — and it would be a new *bounded* stage (`retrieve →
 critique → retrieve once more`), not a free-form loop.
 
-## Skills
+### Skills
 
 | Skill | Route | Behaviour |
 |---|---|---|
@@ -325,7 +301,7 @@ frontmatter (`target_words`, `tolerance_words`) that the code reads, and prose r
 model reads. A writer can improve the essay standard in a reviewable diff, and in Docker
 the directory is mounted read-only so the change takes effect without a rebuild.
 
-## Memory
+## Memory and context
 
 Three categories, one mechanism:
 
@@ -363,7 +339,7 @@ explicit rules, separate response fields (`memories_used` vs `evidence`), and me
 excluded from grounding validation. A test asserts memory content never appears in
 `evidence`.
 
-## Context builder
+### Context builder
 
 ```
 BASE RULES              cite [S#]; never invent; memory is not evidence; refuse if unsupported
@@ -649,34 +625,3 @@ makes it reachable on Linux as well as macOS.
 Migrations run in the backend's start command, so `docker compose up --build` really is one
 command on a clean machine. Both images run as non-root; the frontend uses Next's
 `standalone` output.
-
-## Trade-offs, restated
-
-1. **One database, not a stack** — Postgres as OLTP + FTS + vector store. One backup, one
-   connection string, one failure mode; free joins between chunks and episode metadata.
-   Revisit past ~1M chunks.
-2. **Controlled agent, not autonomous** — deterministic routing and bounded skills buy
-   reliability, testability, latency and debuggability; the price is no adaptive multi-hop
-   retrieval, which would return as a *bounded* extra stage.
-3. **Memory separated from evidence** — structurally, not by convention.
-4. **Lexical grounding, not semantic verification** — cheap, deterministic, catches the
-   common failure; documented limits and a clear upgrade path.
-5. **Fusion heuristic, not a cross-encoder** — right call at this corpus size.
-6. **No silent provider fallback** — predictability and data-residency beat uptime theatre.
-7. **Skills as files, not prompts in code** — writing standards belong to writers.
-
-## What I would do next
-
-In priority order, with reasons:
-
-1. **Run the M1 evaluation** — 30 questions, human-scored. Every other tuning decision is
-   guesswork until this exists.
-2. **Semantic grounding** — NLI per claim behind the current interface; the lexical
-   validator becomes the fast pre-filter.
-3. **A bounded second retrieval hop** for multi-hop questions ("what did X say about Y that
-   contradicts Z"): retrieve → critique → retrieve once more, still bounded.
-4. **Query rewriting from session context** so "how do they measure that?" retrieves on the
-   resolved question rather than the pronoun.
-5. **Instrument citation click-through** (M5) — the cheapest real signal of whether people
-   trust the answers.
-6. **Auth + per-team memory** when this stops being a local evaluation build.
