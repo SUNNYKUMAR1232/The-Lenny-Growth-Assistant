@@ -88,6 +88,18 @@ body {
 .prose-chat > * + * {
   @apply mt-3;
 }
+.prose-chat p {
+  @apply text-ink;
+}
+.prose-chat strong {
+  @apply font-semibold text-ink;
+}
+.prose-chat em {
+  @apply italic;
+}
+.prose-chat hr {
+  @apply my-4 border-line;
+}
 .prose-chat h1 {
   @apply mt-6 text-xl font-semibold tracking-tight;
 }
@@ -105,6 +117,13 @@ body {
 }
 .prose-chat a {
   @apply text-accent underline underline-offset-2;
+  /* Transcript citations are long YouTube URLs; without this they push the
+     whole column wide and force horizontal scrolling. */
+  overflow-wrap: anywhere;
+}
+.prose-chat p,
+.prose-chat li {
+  overflow-wrap: break-word;
 }
 .prose-chat code {
   @apply rounded bg-surface-sunken px-1.5 py-0.5 font-mono text-[13px];
@@ -124,6 +143,28 @@ body {
 .prose-chat th,
 .prose-chat td {
   @apply border border-line px-3 py-2 text-left;
+}
+
+/* Caret shown while a response streams in. */
+.caret {
+  @apply ml-0.5 inline-block h-4 w-[2px] translate-y-0.5 bg-accent;
+  animation: caret-blink 1s steps(2, start) infinite;
+}
+
+@keyframes caret-blink {
+  to {
+    visibility: hidden;
+  }
+}
+
+.label {
+  @apply mb-1.5 block text-xs font-medium uppercase tracking-wide text-ink-faint;
+}
+
+.field {
+  @apply w-full rounded-lg border border-line bg-surface px-3 py-2 text-sm text-ink
+    outline-none transition-colors placeholder:text-ink-faint
+    focus:border-accent focus:ring-2 focus:ring-accent/20;
 }
 
 @media (prefers-reduced-motion: reduce) {
