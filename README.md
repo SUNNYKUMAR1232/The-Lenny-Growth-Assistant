@@ -27,351 +27,172 @@ HTML one-pager and it renders in a sandboxed viewer beside the chat.
 └──────────────┴──────────────────────────────┴─────────────────────────┘
 ```
 
-Screenshots of the running app — empty state, a grounded answer, expanded sources with
-episode deep links, and an artifact in the sandboxed viewer — are in
-[`docs/images/`](docs/images/).
+Screenshots are in [`docs/images/`](docs/images/).
 
 ---
 
 ## Setup in one command
 
-Clone the repo, then run the script for your platform. It checks prerequisites, writes
-`.env`, pulls the local models, fetches the transcripts, starts the stack, and indexes the
-knowledge base — everything in [section 4](#4-quick-start-docker), in one step.
-
 ```bash
 ./scripts/setup.sh            # macOS / Linux
 ```
-
 ```powershell
 .\scripts\setup.ps1           # Windows
 ```
 
-Then open <http://localhost:3000>. Add `--full` (`-Full` on Windows) to index all 303
-episodes instead of the 25-episode demo corpus. Full options are in
-[section 4](#4-quick-start-docker); the manual steps are there too, if you would rather run
-them yourself.
-
----
-
-## Table of contents
-
-1. [What it does](#1-what-it-does)
-2. [Architecture](#2-architecture)
-3. [Prerequisites](#3-prerequisites)
-4. [Quick start (Docker)](#4-quick-start-docker)
-5. [Quick start (local, no Docker)](#5-quick-start-local-no-docker)
-5b. [Running on Windows (Command Prompt)](#5b-running-on-windows-command-prompt)
-6. [Transcript setup](#6-transcript-setup)
-7. [Model configuration](#7-model-configuration)
-8. [Environment variables](#8-environment-variables)
-9. [Development commands](#9-development-commands)
-10. [Tests](#10-tests)
-11. [API reference](#11-api-reference)
-12. [Observability](#12-observability)
-13. [Troubleshooting](#13-troubleshooting)
-14. [Security notes](#14-security-notes)
-15. [Architecture trade-offs](#15-architecture-trade-offs)
-16. [What is not built](#16-what-is-not-built)
-17. [Repository map](#17-repository-map)
-
----
-
-## 1. What it does
-
-| Capability | How it works |
-|---|---|
-| **Grounded Q&A** | Hybrid retrieval (pgvector + Postgres FTS) → Evidence Pack → answer with `[S#]` citations → grounding validation |
-| **Session memory** | Each chat is an independent session; history, evidence, routing and grounding verdicts are persisted in PostgreSQL |
-| **Personal memory** | Durable facts about the user are extracted, filtered by confidence/importance, retrieved per query — and never treated as evidence |
-| **Ship 30 essays** | A dedicated skill file (`skills/ship30/SKILL.md`) encodes the writing standard; the agent enforces length and grounding |
-| **Artifacts** | Markdown and complete HTML/CSS documents, sanitized server-side and rendered in a fully sandboxed iframe |
-| **Model flexibility** | `LLM_PROVIDER=ollama\|cloud` — local Ollama or Anthropic/OpenAI, no code change, provider always visible in the UI |
-| **Operability** | One-command startup, structured JSON logs, dependency-level health checks, typed errors, 119 backend + 15 frontend tests |
-
----
-
-## 2. Architecture
-
-```
-                    ┌──────────────────────────────┐
-                    │         Next.js UI           │
-                    │  chat · sources · artifacts  │
-                    │  memory · model indicator    │
-                    └──────────────┬───────────────┘
-                             REST + SSE
-                                   ▼
-                    ┌──────────────────────────────┐
-                    │           FastAPI            │
-                    │ sessions · chat · artifacts  │
-                    │ memory · ingestion · health  │
-                    └──────────────┬───────────────┘
-                                   ▼
-                    ┌──────────────────────────────┐
-                    │   Controlled Agent Controller│
-                    │ classify → retrieve → execute│
-                    │        → validate            │
-                    └──────────────┬───────────────┘
-              ┌────────────────────┼────────────────────┐
-              ▼                    ▼                    ▼
-        ┌───────────┐       ┌────────────┐       ┌────────────┐
-        │ RAG skill │       │ Ship30     │       │ Artifact   │
-        │           │       │ skill      │       │ skill      │
-        └─────┬─────┘       └─────┬──────┘       └─────┬──────┘
-              └───────────────────┼────────────────────┘
-                                  ▼
-                    ┌──────────────────────────────┐
-                    │      Retrieval Engine        │
-                    │ vector · keyword · RRF fuse  │
-                    │ rerank · episode expansion   │
-                    └──────────────┬───────────────┘
-                                   ▼
-                    ┌──────────────────────────────┐
-                    │        Evidence Pack         │
-                    │ source · chunk · score · url │
-                    └──────────────┬───────────────┘
-        ┌──────────────────────────┼──────────────────────────┐
-        ▼                          ▼                          ▼
-┌───────────────┐        ┌──────────────────┐       ┌──────────────────┐
-│  User Memory  │        │ Conversation     │       │ Transcript       │
-│ personalizes  │        │ context          │       │ knowledge        │
-└───────┬───────┘        └────────┬─────────┘       └────────┬─────────┘
-        └─────────────────────────┼──────────────────────────┘
-                                  ▼
-                       ┌────────────────────┐
-                       │  Context Builder   │  three labelled blocks,
-                       └─────────┬──────────┘  never blurred together
-                                 ▼
-                       ┌────────────────────┐
-                       │   Model Gateway    │  Ollama | Anthropic | OpenAI
-                       └─────────┬──────────┘
-                                 ▼
-                       ┌────────────────────┐
-                       │ Grounding Validator│  claims ↔ evidence
-                       └─────────┬──────────┘
-                                 ▼
-                          Final response
-```
-
-Full detail — schema, boundaries, failure handling, why each choice was made — is in
-[`docs/architecture.md`](docs/architecture.md).
-
----
-
-## 3. Prerequisites
-
-| Requirement | Why | Notes |
-|---|---|---|
-| **Docker + Docker Compose** | the one-command path | or Python 3.11 + Node 22 + Postgres 16 locally |
-| **Ollama** | the demo runs on a local model | https://ollama.com — installed on the **host**, not in Compose |
-| **~6 GB disk** | model weights + transcripts | `llama3.1:8b` ≈ 4.7GB, `nomic-embed-text` ≈ 274MB |
-| **git** | to clone the transcript archive | `make transcripts` |
-| Anthropic or OpenAI key | optional | only if you want to run the cloud provider |
-
----
-
-## 4. Quick start (Docker)
-
-**One command.** `scripts/setup.sh` (macOS/Linux) and `scripts/setup.ps1` (Windows) do
-every step in this section for you: check prerequisites, write `.env`, pull the models,
-fetch the transcripts, start the stack, and index the knowledge base. They are idempotent
-— a re-run after a failure resumes instead of starting over.
-
-```bash
-git clone <this-repo> lenny-growth-assistant
-cd lenny-growth-assistant
-./scripts/setup.sh
-```
-
-```powershell
-git clone <this-repo> lenny-growth-assistant
-cd lenny-growth-assistant
-.\scripts\setup.ps1
-```
-
-Both take the same options:
+Checks prerequisites, writes `.env`, pulls the models, fetches the transcripts, starts the
+stack, and indexes the knowledge base. Idempotent — a re-run after a failure resumes.
+Then open <http://localhost:3000>.
 
 | macOS / Linux | Windows | Effect |
 |---|---|---|
 | *(default)* | *(default)* | index 25 episodes — a demo corpus, a few minutes |
-| `--full` | `-Full` | index all 303 episodes (~21,700 chunks; takes a while) |
-| `--episodes 50` | `-Episodes 50` | choose the corpus size yourself |
+| `--full` | `-Full` | index all 303 episodes (~21,700 chunks) |
+| `--episodes 50` | `-Episodes 50` | choose the corpus size |
 | `--force` | `-Force` | re-chunk and re-embed what is already indexed |
-| `--skip-models` | `-SkipModels` | Ollama already has the models, or you want a cloud model |
-| `--skip-transcripts` | `-SkipTranscripts` | transcripts are already in `data/transcripts/episodes` |
+| `--skip-models` | `-SkipModels` | models already pulled, or using a cloud model |
+| `--skip-transcripts` | `-SkipTranscripts` | transcripts already on disk |
 
-Use `--force` after changing `EMBEDDING_PROVIDER` or the chunk size: the vectors already in
-Postgres were produced by the *old* embedder, and mixing embedders in one index silently
-degrades retrieval rather than failing.
+Use `--force` after changing `EMBEDDING_PROVIDER` or the chunk size: vectors already in
+Postgres came from the *old* embedder, and mixing embedders in one index degrades
+retrieval silently rather than failing.
 
-If PowerShell refuses to run the script, that is the execution policy, not the script.
-Allow it for that window only:
+If PowerShell blocks the script, that is the execution policy, not the script:
+`Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass`.
 
-```powershell
-Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+---
+
+## Contents
+
+[What it does](#what-it-does) · [Architecture](#architecture) · [Prerequisites](#prerequisites) ·
+[Running it](#running-it) · [Knowledge base](#knowledge-base) · [Model configuration](#model-configuration) ·
+[Environment variables](#environment-variables) · [Commands](#commands) · [Tests](#tests) ·
+[API](#api) · [Observability](#observability) · [Troubleshooting](#troubleshooting) ·
+[Security](#security) · [Limitations](#limitations) · [Repository map](#repository-map)
+
+Deeper documents: [PRD](docs/PRD.md) · [architecture.md](docs/architecture.md) ·
+[design.md](docs/design.md) · [manual test plan](docs/manual-test-plan.md) ·
+[demo script](docs/demo-script.md) · [agent transcripts](agent-transcripts/)
+
+---
+
+## What it does
+
+| Capability | How it works |
+|---|---|
+| **Grounded Q&A** | Hybrid retrieval (pgvector + Postgres FTS) → Evidence Pack → answer with `[S#]` citations → grounding validation |
+| **Session memory** | Each chat is an independent session; history, evidence, routing and grounding verdicts persisted in PostgreSQL |
+| **Personal memory** | Durable facts about the user, filtered by confidence/importance, retrieved per query — and never treated as evidence |
+| **Ship 30 essays** | A skill file (`skills/ship30/SKILL.md`) encodes the writing standard; the agent enforces length and grounding |
+| **Artifacts** | Markdown and complete HTML/CSS, sanitized server-side and rendered in a fully sandboxed iframe |
+| **Model flexibility** | Local Ollama, Anthropic/OpenAI, or the Pi agent — no code change, provider always visible in the UI |
+| **Operability** | One-command startup, structured JSON logs, dependency-level health checks, typed errors, 130 backend + 30 frontend tests |
+
+---
+
+## Architecture
+
+```
+Next.js UI  ──REST/SSE──▶  FastAPI  ──▶  Controlled Agent Controller
+                                          classify → retrieve → execute → validate
+                                                    │
+                          ┌───────────────┬─────────┴────────┐
+                          ▼               ▼                  ▼
+                      RAG skill      Ship30 skill      Artifact skill
+                          └───────────────┼──────────────────┘
+                                          ▼
+                             Retrieval  vector · keyword · RRF · rerank
+                                          ▼
+                             Evidence Pack  source · chunk · score · url
+                                          ▼
+                             Context Builder  memory | history | evidence
+                                          ▼          (three labelled blocks,
+                             Model Gateway   never blurred together)
+                                          ▼
+                             Grounding Validator  claims ↔ evidence
+                                          ▼
+                                   Final response
 ```
 
-<details>
-<summary><b>Prefer to run the steps yourself?</b></summary>
+The agent is **controlled, not autonomous**: deterministic routing over a bounded set of
+skills. Every turn walks the same pipeline, so each stage boundary is a log line and a unit
+test — there is no plan the model can invent and no tool loop that can run away.
+
+Two other decisions worth stating: **one database, not a stack** (Postgres is the
+transactional store, the FTS engine, *and* the vector store — one backup, one connection
+string, one failure mode), and **memory is separated from transcript evidence** (separate
+tables, separately labelled prompt blocks, separate response fields; only evidence is
+checked by the validator).
+
+Schema, component boundaries, retrieval weights, failure handling and the long-form
+rationale: [`docs/architecture.md`](docs/architecture.md).
+
+---
+
+## Prerequisites
+
+| Requirement | Why | Notes |
+|---|---|---|
+| **Docker + Docker Compose** | the one-command path | or Python 3.11 + Node 22 + Postgres 16 locally |
+| **Ollama** | the demo runs on a local model | https://ollama.com — on the **host**, not in Compose |
+| **~6 GB disk** | model weights + transcripts | `llama3.1:8b` ≈ 4.7GB, `nomic-embed-text` ≈ 274MB |
+| **git** | to clone the transcript archive | done by the setup script |
+| Anthropic or OpenAI key | optional | only for the cloud provider |
+
+---
+
+## Running it
+
+**Docker** — what the setup script automates:
 
 ```bash
-git clone <this-repo> lenny-growth-assistant
-cd lenny-growth-assistant
 cp .env.example .env
-
-# 1. Local model (in a separate terminal, on the host — not in Docker)
-ollama serve
-ollama pull llama3.1:8b
-ollama pull nomic-embed-text
-
-# 2. Transcripts (~26MB, 303 episodes)
-make transcripts
-
-# 3. The stack: postgres + backend + frontend, migrations run automatically
-docker compose up --build     # or: make up
-
-# 4. Index a demo-sized corpus (25 episodes, a few minutes)
-make ingest-demo              # or `make ingest` for all 303
-
-# 5. Open the app
-open http://localhost:3000
+ollama serve && ollama pull llama3.1:8b && ollama pull nomic-embed-text
+make transcripts                 # clone the transcript archive
+docker compose up --build -d     # migrations run automatically
+make ingest-demo                 # index 25 episodes (make ingest for all 303)
 ```
 
-Verify before you start clicking:
+In `.env`, Docker needs `OLLAMA_BASE_URL=http://host.docker.internal:11434`. The
+`.env.example` default is `localhost`, which is right only for the no-Docker path — leave
+it and the backend looks for Ollama inside its own container (amber model badge).
+
+Verify before clicking:
 
 ```bash
-curl -s localhost:8000/health | python3 -m json.tool
-# {"status": "ok", "components": {"database": {"status": "ok", ...},
-#                                 "model": {"status": "ok", "detail": "ollama:llama3.1:8b"},
-#                                 "embeddings": {"status": "ok", ...}}}
+curl -s localhost:8000/health | python -m json.tool
+# components.model → {"status":"ok","detail":"ollama:llama3.1:8b"}
 ```
 
-</details>
-
-If `model` is `degraded`, Ollama is not reachable from the container — see
-[Troubleshooting](#13-troubleshooting).
-
----
-
-## 5. Quick start (local, no Docker)
+**Local, no Docker** — Postgres 16 with pgvector must be reachable:
 
 ```bash
-# Postgres 16 with pgvector must be running and reachable.
-createdb lenny
-psql -d lenny -c 'CREATE EXTENSION IF NOT EXISTS vector;'
-
-cp .env.example .env    # set DATABASE_URL to your local instance
-
-make venv               # creates backend/.venv, installs dependencies
-make migrate            # alembic upgrade head
-make transcripts
-make ingest-local
-
-make dev-backend        # terminal 1 → http://localhost:8000
-make dev-frontend       # terminal 2 → http://localhost:3000
+createdb lenny && psql -d lenny -c 'CREATE EXTENSION IF NOT EXISTS vector;'
+make venv && make migrate
+make transcripts && make ingest-local
+make dev-backend      # terminal 1 → :8000
+make dev-frontend     # terminal 2 → :3000
 ```
+
+**Windows** — use `.\scripts\setup.ps1`. `make` does not exist in `cmd`/PowerShell, so
+without the script you run the Makefile's commands by hand; the equivalents are
+`copy` for `cp`, `move` for `mv`, `rmdir /s /q` for `rm -rf`, and `$env:VAR="value"` for
+`export`. If port 5432 is taken by a local Postgres, publish `-p 5433:5432` and update
+`DATABASE_URL`.
 
 ---
 
-## 5b. Running on Windows (Command Prompt)
+## Knowledge base
 
-> Most people should use `.\scripts\setup.ps1` from [section 4](#4-quick-start-docker)
-> instead — it does everything below in one command. The rest of this section is the
-> manual path, and the reference for what the script actually does.
-
-`make` does not exist in `cmd`, so run what the Makefile would. Docker Desktop is the
-easiest path.
-
-```cmd
-git clone <your-repo-url> lenny-growth-assistant
-cd lenny-growth-assistant
-copy .env.example .env
-```
-
-Edit `.env` and set the one line that differs on Windows containers:
-
-```
-OLLAMA_BASE_URL=http://host.docker.internal:11434
-```
-
-Pull the models (Ollama for Windows runs as a background service once installed):
-
-```cmd
-ollama pull llama3.1:8b
-ollama pull nomic-embed-text
-```
-
-Transcripts, the `make transcripts` equivalent:
-
-```cmd
-git clone --depth 1 https://github.com/ChatPRD/lennys-podcast-transcripts.git data\transcripts\_archive
-move data\transcripts\_archive\episodes data\transcripts\episodes
-rmdir /s /q data\transcripts\_archive
-```
-
-Start the stack, then index in a second window:
-
-```cmd
-docker compose up --build
-
-docker compose exec backend python -m app.scripts.ingest --limit 25
-docker compose exec backend python -m app.scripts.ingest --stats
-curl http://localhost:8000/health
-```
-
-Open <http://localhost:3000>.
-
-**Without Docker for the app** (Postgres still needs pgvector, so keep that in a
-container):
-
-```cmd
-docker run -d --name lga-pg -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=lenny -p 5432:5432 pgvector/pgvector:pg16
-
-cd backend
-python -m venv .venv
-.venv\Scripts\activate
-pip install -r requirements-dev.txt
-set DATABASE_URL=postgresql+asyncpg://postgres:postgres@localhost:5432/lenny
-alembic upgrade head
-python -m app.scripts.ingest --limit 25
-uvicorn app.main:app --reload --port 8000
-```
-
-```cmd
-cd frontend
-npm install
-npm run dev
-```
-
-Windows-specific gotchas:
-
-- `set VAR=value` takes **no quotes** and lasts only for that window. Anything permanent
-  belongs in `.env`. PowerShell uses `$env:VAR="value"`.
-- Use `move` / `rmdir /s /q` instead of `mv` / `rm -rf`, and backslashes in paths.
-- If port 5432 is already taken by a local Postgres, publish `-p 5433:5432` and use
-  `...@localhost:5433/lenny`.
-- Amber model badge means Ollama is unreachable: check `ollama list`, and that `.env`
-  uses `host.docker.internal` for Docker and `localhost` for the local path.
-
----
-
-## 6. Transcript setup
-
-**Where the data comes from.** The corpus is the public archive
+The corpus is the public archive
 [`ChatPRD/lennys-podcast-transcripts`](https://github.com/ChatPRD/lennys-podcast-transcripts):
-303 episodes as `episodes/<guest-slug>/transcript.md`, each with YAML frontmatter (guest,
-title, `youtube_url`, publish date, keywords) and a speaker-labelled body with timestamps.
-
-It is **not vendored into this repository** — it is ~26MB of someone else's content, and
-pinning a copy would go stale. `make transcripts` clones it into `data/transcripts/`
-(gitignored). Nothing in this repo invents transcript content; with no transcripts
-ingested, the assistant refuses to answer rather than falling back on the model's priors.
-
-**How ingestion works** (`backend/app/ingestion/`):
+303 episodes as `episodes/<guest-slug>/transcript.md` with YAML frontmatter and a
+speaker-labelled body. It is **not vendored** — ~26MB of someone else's content that would
+go stale — so the setup script clones it into `data/transcripts/` (gitignored).
 
 ```
 transcript.md
-   ↓  loader     frontmatter → title / guest / source_url / metadata
+   ↓  loader     frontmatter → title / guest / source_url
    ↓  cleaner    parse `Speaker (00:12:34):` turns; drop sponsor reads and the outro
    ↓  chunker    pack whole turns to ~350 tokens with ~60 tokens of overlap
    ↓  embedder   Ollama nomic-embed-text (768d)
@@ -379,169 +200,103 @@ transcript.md
    ↓  index      pgvector HNSW (cosine) + a GENERATED tsvector column with a GIN index
 ```
 
-**Chunking strategy.** Podcast answers are long and self-contained, so chunks break on
-*utterance boundaries* rather than character counts — a chunk is a whole run of turns.
-~350 tokens is long enough to carry a claim plus its qualifier and short enough that eight
-of them fit comfortably in an 8B model's context alongside history and instructions.
+Chunks break on **utterance boundaries**, not character counts — a podcast answer is long
+and self-contained, and ~350 tokens carries a claim plus its qualifier while letting eight
+fit in an 8B model's context. `chunks.content_tsv` is a GENERATED column, so the lexical
+index can never drift from the text.
 
-**Indexing strategy.** `chunks.content_tsv` is a Postgres GENERATED column, so the lexical
-index can never drift from the text. Vectors use an HNSW index with cosine ops.
-
-**Refresh / re-ingestion.** Documents are keyed by their path in the archive and carry a
-content hash. Re-running ingestion skips unchanged episodes, so `git pull` in
-`data/transcripts` + `make ingest` only pays for what changed. `--force` re-chunks and
-re-embeds everything (needed after changing chunk sizes or the embedding model).
-
-**Source tracing.** Every chunk stores `title`, `guest`, `source_url`, `chunk_index`,
-`start_seconds`, and a `deep_link` — a YouTube URL with `&t=<seconds>s`. That is what the
-"Listen" button in the sources list opens, so any citation can be verified against the
-recording in two clicks.
-
-```bash
-make corpus     # documents / chunks / embedded chunks / guests currently indexed
-```
+**Refresh.** Documents are keyed by archive path and carry a content hash, so re-running
+ingestion skips unchanged episodes; `--force` re-chunks and re-embeds everything (needed
+after changing the embedding model). **Tracing.** Every chunk stores `title`, `guest`,
+`source_url`, `chunk_index`, `start_seconds` and a `deep_link` — a YouTube URL with
+`&t=<seconds>s`, which is what the "Listen" button opens.
 
 ---
 
-## 7. Model configuration
+## Model configuration
 
-Switching models is an environment change. No code changes, no rebuild of the backend
-image (restart the container to pick up new env).
+Switch models without touching code — via `.env`, or from the UI's model settings panel
+with no restart.
 
 ```env
-# Local — this is what the submitted demo runs on
-LLM_PROVIDER=ollama
+LLM_PROVIDER=ollama          # ollama | cloud | pi | stub
 OLLAMA_MODEL=llama3.1:8b
-OLLAMA_BASE_URL=http://localhost:11434     # http://host.docker.internal:11434 in Docker
-EMBEDDING_PROVIDER=ollama
-OLLAMA_EMBEDDING_MODEL=nomic-embed-text
-```
-
-```env
-# Cloud
-LLM_PROVIDER=cloud
-CLOUD_PROVIDER=anthropic        # or openai
+CLOUD_PROVIDER=anthropic     # anthropic | openai
 CLOUD_MODEL=claude-sonnet-4-5
-ANTHROPIC_API_KEY=sk-ant-...
+ANTHROPIC_API_KEY=           # only when LLM_PROVIDER=cloud
 ```
 
-### Switching models from the UI (no restart, no `.env` edit)
+The active provider is always visible in the UI badge and at `GET /api/model`.
 
-Click the model badge in the header → **Configure model / connect a cloud provider**.
-The panel lets you pick a provider, a model, a base URL and paste an API key, test the
-connection with one real call, and save — the next message uses it.
+**Fallback policy — deliberately no silent cross-provider fallback.** If you chose a local
+model for data-residency reasons, a hiccup must never quietly ship your prompt to a cloud
+API. A down provider returns a typed, actionable error and the UI shows it. The *one*
+automatic degradation is retrieval: if the embedding model is unavailable, search drops to
+keyword-only, and the response is marked degraded with the reason
+(`EMBEDDING_ALLOW_FALLBACK=true`).
 
-How the key is handled, because it is a credential in a browser form:
+**Runtime config from the UI** (`POST /api/model/config`) is memory-only: keys never touch
+disk, reads return only the last four characters, restarting returns to `.env`, and
+`ALLOW_RUNTIME_MODEL_CONFIG=false` (the default in production) refuses the endpoint.
 
-| | |
-|---|---|
-| Stored | In the backend process's memory only. No database row, no file, nothing to leak in a backup or a `git add`. |
-| Returned | Never. Reads report `api_key_set: true` plus the last four characters (`…9f2a`) so you can tell two keys apart. |
-| Logged | Never. The call site logs `api_key_set`, and a redaction processor scrubs credential-shaped fields as a second line of defence. Both are asserted by tests. |
-| Lifetime | Until the backend restarts, which always returns to the documented `.env` configuration. |
-| Disabled by | `ALLOW_RUNTIME_MODEL_CONFIG=false` — set this for any shared deployment, where models belong in the environment. The endpoint then returns `MODEL_CONFIG_LOCKED`. |
-
-Switching vendor clears the key field in both the UI and the backend, so an Anthropic
-key can never be submitted against an OpenAI endpoint.
-
-The active provider is always shown in the UI header (click the badge for model,
-embedding provider, and per-dependency health) and returned by `GET /api/model`.
-
-**Fallback behaviour — deliberate and documented.** There is **no automatic
-cross-provider fallback**. If you selected a local model and Ollama goes down, the request
-fails with `MODEL_UNAVAILABLE` and an actionable message; your prompt is never silently
-shipped to a cloud API you did not choose. Switching is an explicit operator action.
-
-There *is* one automatic degradation, and the UI announces it: if the **embedding** model
-is unavailable, retrieval degrades to keyword-only rather than failing the request
-(`EMBEDDING_ALLOW_FALLBACK=true`). The response is marked degraded and the reason is shown.
-
-### The agent layer: Pi Coding Agent
-
-The assignment asks for the agent layer to be built on the Anthropic Claude Agent SDK
-**or** the Pi Coding Agent. This repository uses **Pi**.
+**The agent layer — Pi Coding Agent.** The assignment asks for the Claude Agent SDK or Pi;
+this repo uses Pi.
 
 ```bash
-npm install -g @earendil-works/pi-coding-agent
+npm install -g @earendil-works/pi-coding-agent    # Node CLI; not in the backend image
 ```
-
 ```env
 LLM_PROVIDER=pi
 PI_PROVIDER=anthropic        # anthropic | openai | google | ollama
-PI_MODEL=claude-sonnet-4-5   # with PI_PROVIDER=ollama, e.g. llama3.1:8b
+PI_MODEL=claude-sonnet-4-5
 ```
 
-…or pick **Pi Coding Agent** in the model settings panel and choose the backend it
-drives. `PI_PROVIDER=ollama` keeps the whole path local.
+> **Docker note:** the backend image ships no Node, so `LLM_PROVIDER=pi` works on the
+> local (non-Docker) path only. In Docker it fails with a clear
+> `The Pi Coding Agent CLI was not found`.
 
-Pi is a Node CLI with a headless mode, so it runs as a subprocess speaking NDJSON
-(`pi --print --mode json`). Two consequences worth stating plainly:
+Pi runs as a subprocess speaking NDJSON, invoked `--no-tools --no-session --no-extensions
+--no-skills --no-context-files --no-prompt-templates` in an empty temp dir. That is the
+point: a coding agent's read/bash/edit/write tools have no place in a grounded-answer path
+where the controller has already retrieved the evidence. Credentials go through the
+environment, never argv — a command line is world-readable in `/proc`.
 
-- **It is bounded on purpose.** Pi is invoked with `--no-tools --no-session
-  --no-extensions --no-skills --no-context-files --no-prompt-templates`, in an empty
-  temp directory. A coding agent's read/bash/edit/write tools have no place in a
-  grounded-answer path: the controller has already retrieved the evidence, and the
-  agent's job is to reason over exactly what it was handed. This keeps the controlled
-  architecture intact instead of fighting it.
-- **Credentials go through the environment, never argv.** A command line is
-  world-readable in `/proc`; an environment is not.
-
-Health is `pi auth check --provider <p> --json` — no model call, no cost.
-
-**Verified so far:** CLI discovery, the bounded invocation, NDJSON parsing (fixtures in
-`tests/test_pi_agent.py` are real recorded output from Pi v0.84.2), health checks, and
-error mapping — including a live subprocess run that correctly surfaced an
-authentication failure as `MODEL_NOT_CONFIGURED`. A *successful* generation needs either
-a real API key or a running Ollama, neither of which existed in the build environment, so
-that last mile is the evaluator's to confirm.
-
-*Why not the Claude Agent SDK:* it was evaluated first and works, but it pulls `mcp` 2.0,
-which requires `starlette>=1.6` and breaks FastAPI 0.116. FastAPI was upgraded to 0.141.1
-(`starlette>=0.46`, no upper bound) so either path can coexist; Pi was chosen because it
-also drives local models, which keeps the mandatory Ollama demo on the same agent code.
-
-A fourth provider, `LLM_PROVIDER=stub`, is a deterministic test double used by the test
-suite. It is not a model; it reports itself as `stub/deterministic` and is never used for
-a demo.
+Full rationale, including why not the Claude Agent SDK (it pulls `mcp` 2.0 → `starlette>=1.6`,
+which broke FastAPI 0.116): [`docs/architecture.md`](docs/architecture.md#the-agent-layer-pi-coding-agent).
 
 ---
 
-## 8. Environment variables
+## Environment variables
 
-Full annotated list in [`.env.example`](.env.example). The ones that matter:
+Every knob is documented with safe defaults in [`.env.example`](.env.example). The ones
+that matter most:
 
-| Variable | Default | Required? | Purpose |
-|---|---|---|---|
-| `DATABASE_URL` | `postgresql+asyncpg://postgres:postgres@localhost:5432/lenny` | **yes** | Postgres + pgvector DSN |
-| `LLM_PROVIDER` | `ollama` | **yes** | `ollama` \| `cloud` \| `stub` |
-| `OLLAMA_BASE_URL` | `http://localhost:11434` | with ollama | `http://host.docker.internal:11434` inside Compose |
-| `OLLAMA_MODEL` | `llama3.1:8b` | with ollama | any chat model you have pulled |
-| `OLLAMA_EMBEDDING_MODEL` | `nomic-embed-text` | with ollama | must be 768-dim to match the schema |
-| `ANTHROPIC_API_KEY` | – | with cloud | never commit it; `.env` is gitignored |
-| `EMBEDDING_PROVIDER` | `ollama` | no | `ollama` \| `openai` \| `hash` |
-| `EMBEDDING_DIM` | `768` | no | changing it needs a new migration + re-ingest |
-| `RETRIEVAL_VECTOR_WEIGHT` / `RETRIEVAL_KEYWORD_WEIGHT` | `0.6` / `0.4` | no | hybrid fusion weights |
-| `GROUNDING_MIN_SUPPORT` | `0.28` | no | per-claim support threshold |
-| `MEMORY_ENABLED` | `true` | no | turn personalization off entirely |
-| `TRANSCRIPTS_DIR` | `./data/transcripts` | no | ingestion root (also the API's path allowlist) |
-| `NEXT_PUBLIC_API_BASE_URL` | `http://localhost:8000` | no | baked into the frontend at build time |
+| Variable | Default | Purpose |
+|---|---|---|
+| `LLM_PROVIDER` | `ollama` | `ollama` · `cloud` · `pi` · `stub` |
+| `EMBEDDING_PROVIDER` | `ollama` | `ollama` · `openai` · `hash` (non-semantic fallback) |
+| `OLLAMA_BASE_URL` | `http://localhost:11434` | **`host.docker.internal` in Docker** |
+| `DATABASE_URL` | local Postgres DSN | host `postgres` in Docker, `localhost` outside |
+| `RETRIEVAL_TOP_K` | `8` | evidence chunks per answer |
+| `GROUNDING_ENABLED` | `true` | claim ↔ evidence validation |
+| `ALLOW_RUNTIME_MODEL_CONFIG` | `true` | off by default in production |
+
+No secrets are committed: `.env` and `.env.bak*` are gitignored, `.env.example` ships empty
+keys, and the log pipeline redacts credential-shaped values.
 
 ---
 
-## 9. Development commands
+## Commands
 
 ```bash
 make help            # every target, described
-make setup           # one-command setup: models, transcripts, stack, knowledge base
-make setup-full      # same, but index all 303 episodes instead of 25
+make setup           # one-command setup (setup-full for all 303 episodes)
 make up / down       # start / stop the Docker stack
 make logs            # tail all service logs
 make transcripts     # clone or update the transcript archive
-make ingest-demo     # index 25 episodes
-make ingest          # index all 303
+make ingest-demo     # index 25 episodes   (make ingest = all 303)
 make corpus          # what is indexed right now
-make venv            # local Python env
-make migrate         # alembic upgrade head
+make venv / migrate  # local Python env; alembic upgrade head
 make dev-backend     # uvicorn with autoreload
 make dev-frontend    # next dev
 make test            # backend + frontend suites
@@ -550,45 +305,37 @@ make typecheck       # tsc --noEmit
 
 ---
 
-## 10. Tests
+## Tests
 
 ```bash
 make test
 ```
 
-**Backend — 119 tests** (`backend/tests/`), run against a real Postgres + pgvector, with
-the deterministic stub provider and embedder so no model server or API key is needed:
+**Backend — 130 tests** (`backend/tests/`), against a real Postgres + pgvector, using the
+deterministic stub provider and embedder so no model server or API key is needed. Covers
+health and session CRUD, the structured error envelope, end-to-end chat per route, session
+isolation, SSE streaming, refusal with no evidence, all three retrieval legs and fusion,
+routing precedence, memory isolation and cap eviction, grounding accept/annotate/refuse,
+12 artifact injection payloads, ingestion idempotency, model-gateway timeouts and
+unreachability, and persistence cascades.
 
-| File | Covers |
-|---|---|
-| `test_api.py` | health, sessions CRUD, validation errors, structured error envelope, request ids |
-| `test_chat_flow.py` | end-to-end turns per route, persistence, session isolation, SSE event stream, refusal with no evidence |
-| `test_retrieval.py` | keyword leg, vector leg, hybrid fusion, diversity, guest boosting, empty retrieval, episode expansion |
-| `test_routing.py` | rule routing, hints, precedence, LLM tie-breaker failure, "no model call when a rule matches" |
-| `test_memory.py` | extraction filtering, upsert, query-dependent retrieval, user isolation, cap eviction, **memory failure does not break RAG** |
-| `test_grounding.py` | supported accepted, unsupported annotated, empty evidence refused, hallucinated citations stripped |
-| `test_artifact_security.py` | 12 injection payloads, CSS filtering, data-URI-only images, size limits, API sanitization |
-| `test_ingestion.py` | frontmatter parsing, sponsor/outro removal, chunk boundaries, deep links, idempotent re-ingest |
-| `test_llm_gateway.py` | Ollama generate/stream/timeout/404/unreachable (httpx MockTransport), cloud key errors, JSON extraction |
-| `test_persistence.py` | cascades, metadata round-trip, uniqueness constraints, timestamps |
+**Frontend — 30 tests** (`frontend/tests/`): SSE parsing including partial buffers and
+malformed payloads, artifact viewer sandbox attributes, and message metadata rendering.
 
-**Frontend — 15 tests** (`frontend/tests/`): SSE parsing (including partial buffers and
-malformed payloads), artifact viewer sandbox attributes, and message metadata rendering.
-
-A **manual UI test plan** is in [`docs/manual-test-plan.md`](docs/manual-test-plan.md).
-
-CI runs both suites plus a production build on every push
+A manual UI test plan is in [`docs/manual-test-plan.md`](docs/manual-test-plan.md). CI runs
+both suites plus a production build on every push
 ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)).
 
 ---
 
-## 11. API reference
+## API
 
 Interactive docs at `http://localhost:8000/docs`.
 
 ```
 GET    /health                              dependency-level health
 GET    /api/model                           active provider + availability
+                                            (/options, /test, /config — see architecture.md)
 
 POST   /api/sessions                        create a session
 GET    /api/sessions?external_user_id=…     list sessions
@@ -623,182 +370,110 @@ Codes the UI branches on: `SESSION_NOT_FOUND`, `VALIDATION_ERROR`, `DATABASE_UNA
 
 ---
 
-### Model configuration endpoints
-
-| Method | Path | Purpose |
-|---|---|---|
-| `GET` | `/api/model` | Active provider, model, embedding provider, availability |
-| `GET` | `/api/model/options` | Providers and preset models the settings panel offers |
-| `POST` | `/api/model/test` | Verify a *proposed* configuration with one real call |
-| `POST` | `/api/model/config` | Switch provider / model / base URL / API key |
-| `DELETE` | `/api/model/config` | Revert to the `.env` configuration |
-
-The write endpoints return `403 MODEL_CONFIG_LOCKED` when
-`ALLOW_RUNTIME_MODEL_CONFIG=false`. A failed `/test` never changes the active provider.
-
----
-
-## 12. Observability
+## Observability
 
 Structured JSON logs on stdout, one line per event, with `request_id` and `session_id`
 bound for the whole turn:
 
 ```json
 {"event":"retrieval.completed","strategy":"chunk","retrieval_count":8,"candidates":51,
- "vector_hits":30,"keyword_hits":30,"latency_ms":15.98,"degraded":false,
- "request_id":"a94ae86c…","session_id":"b8dbdba3…","timestamp":"2026-08-24T03:26:40Z"}
+ "latency_ms":15.98,"degraded":false,"request_id":"a94ae86c…","timestamp":"2026-08-24T03:26:40Z"}
 ```
 
-Events: `request.started` · `agent.route_selected` · `memory.retrieved` ·
-`retrieval.started` · `retrieval.completed` · `evidence.created` · `llm.started` ·
-`llm.completed` · `llm.failed` · `grounding.completed` · `artifact.generated` ·
-`artifact.sanitized` · `memory.extracted` · `database.error` · `request.completed`.
-
-API keys and secrets are redacted by a log processor before rendering, so a careless
-`log.info(..., api_key=...)` cannot leak one.
+Events run `request.started` → `agent.route_selected` → `memory.retrieved` →
+`retrieval.*` → `evidence.created` → `llm.*` → `grounding.completed` →
+`artifact.*` → `request.completed`, plus `database.error`. A log processor redacts
+credential-shaped keys, so a careless `log.info(..., api_key=...)` cannot leak one.
 
 ```bash
 docker compose logs -f backend | grep retrieval.completed
-LOG_FORMAT=console make dev-backend      # human-readable logs while developing
+LOG_FORMAT=console make dev-backend      # human-readable while developing
 ```
 
 ---
 
-## 13. Troubleshooting
-
-### "I couldn't find anything in the transcripts" for every question
-
-The knowledge base is empty — ingestion has not run. The assistant now says so
-explicitly and prints the command, and `/health` reports it:
-
-```bash
-curl -s localhost:8000/health | python -m json.tool     # look at components.knowledge_base
-docker compose exec backend python -m app.scripts.ingest --stats
-```
-
-If `chunks` is 0, run `make ingest LIMIT=25` (or the `docker compose exec` form above).
-Retrieval finishing in ~60ms is the tell: an indexed corpus takes longer than that.
-
-A *populated* corpus that still refuses one specific question is different, and the
-wording differs too — that is retrieval genuinely finding nothing relevant, which is the
-system working as designed.
+## Troubleshooting
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| `/health` → `model: degraded`, "Could not reach Ollama" | Ollama not running, or not reachable from the container | `ollama serve` on the host; in Docker set `OLLAMA_BASE_URL=http://host.docker.internal:11434` (Linux: `--add-host` is already configured via `extra_hosts`) |
-| `MODEL_UNAVAILABLE`, "does not have `llama3.1:8b` pulled" | model not downloaded | `ollama pull llama3.1:8b` |
-| Answers say "I couldn't find anything…" for everything | corpus is empty | `make transcripts && make ingest-demo`; check `make corpus` |
-| `/health` → `database: down` | Postgres not up, or wrong DSN | `docker compose ps`; check `DATABASE_URL` (Docker uses host `postgres`, local uses `localhost`) |
+| Every question says "I couldn't find anything…" | corpus is empty | `make corpus`; if `chunks` is 0, `make transcripts && make ingest-demo`. ~60ms retrieval is the tell |
+| `/health` → `model: degraded` | Ollama down or unreachable from the container | `ollama serve`; set `OLLAMA_BASE_URL=http://host.docker.internal:11434` |
+| `MODEL_UNAVAILABLE`, "does not have `llama3.1:8b`" | model not pulled | `ollama pull llama3.1:8b` |
+| `The Pi Coding Agent CLI was not found` | Pi needs Node; not in the backend image | use the local path, or `npm install -g @earendil-works/pi-coding-agent` |
+| `/health` → `database: down` | Postgres not up, or wrong DSN | `docker compose ps`; Docker uses host `postgres`, local uses `localhost` |
 | `pgvector extension is not installed` | plain Postgres image | use `pgvector/pgvector:pg16`, or `CREATE EXTENSION vector;` then `make migrate` |
-| `Embedding dimension mismatch: model returned 1024, schema expects 768` | different embedding model | keep a 768-dim model, or set `EMBEDDING_DIM`, write a migration, and re-ingest with `--force` |
+| `Embedding dimension mismatch: returned 1024, schema expects 768` | different embedding model | keep a 768-dim model, or set `EMBEDDING_DIM`, migrate, and re-ingest `--force` |
 | Retrieval marked "keyword-only" | embedding model down | start Ollama and pull `nomic-embed-text`; the app keeps working meanwhile |
-| Frontend loads, every call fails with `NETWORK_ERROR` | frontend built with the wrong API URL | rebuild with `NEXT_PUBLIC_API_BASE_URL=…` (it is inlined at build time) |
-| First answer takes 30s+ | cold local model | expected on first token; subsequent turns are faster. Use a smaller model (`llama3.2:3b`) on a modest laptop |
-| Essays come out short | small local models under-write | the Ship30 skill already runs one expansion pass; a larger model or the cloud provider closes the gap |
-| Ingestion is slow | embedding throughput | `make ingest-demo` (25 episodes) is enough for a demo; `--no-embed` indexes text only |
+| Frontend loads, calls fail `NETWORK_ERROR` | wrong API URL baked in | rebuild with `NEXT_PUBLIC_API_BASE_URL=…` (inlined at build time) |
+| First answer takes 30s+ | cold local model | expected; later turns are faster. Try `llama3.2:3b` on a modest laptop |
+| Essays come out short | small local models under-write | the skill runs one expansion pass; a larger or cloud model closes the gap |
+
+A *populated* corpus that refuses one specific question is different — and worded
+differently. That is retrieval genuinely finding nothing relevant, which is the system
+working as designed.
 
 ---
 
-## 14. Security notes
+## Security
 
 - **Generated HTML is untrusted.** Two independent layers: a server-side allowlist
   sanitizer (tags, attributes, URL schemes, CSS) that runs before anything is stored, and a
-  viewer that renders the result in an iframe with `sandbox=""` — no scripts, no
-  same-origin, no forms, no navigation — plus a restrictive CSP inside the document.
-  Full rationale, allow/block lists and the residual-risk discussion:
-  [`docs/architecture.md#artifact-security`](docs/architecture.md#artifact-security).
-- **Images must be `data:` URIs.** A remote `<img>` in generated HTML is a tracking pixel
-  with extra steps; remote references are stripped.
-- **Markdown is rendered without `rehype-raw`**, so embedded HTML displays as text.
-- **No secrets in the repo.** `.env` is gitignored, `.env.example` ships empty keys, and
-  the log pipeline redacts credential-shaped keys.
-- **Errors never leak internals.** Clients get a code and a sentence; stack traces and
-  provider messages stay in the logs.
-- **Input validation** on every endpoint via Pydantic; ingestion paths are constrained to
-  `TRANSCRIPTS_DIR` so the API cannot be used to read the filesystem.
-- **No authentication** — deliberately out of scope for a local evaluation build, and
-  called out as such in the PRD. `get_or_create_user` is the single seam to replace.
+  viewer that renders it in an iframe with `sandbox=""` — no scripts, no same-origin, no
+  forms, no navigation — plus a restrictive CSP inside the document.
+- **Images must be `data:` URIs.** A remote `<img>` is a tracking pixel with extra steps.
+- **Markdown renders without `rehype-raw`**, so embedded HTML displays as text.
+- **Errors never leak internals.** Clients get a code and a sentence; stack traces stay in
+  the logs. Pydantic validates every endpoint, and ingestion paths are constrained to
+  `TRANSCRIPTS_DIR` so the API cannot read the filesystem.
+- **No authentication** — deliberately out of scope for a local evaluation build.
+  `get_or_create_user` is the single seam to replace.
+
+Allow/block lists and the residual-risk discussion:
+[`docs/architecture.md#artifact-security`](docs/architecture.md#artifact-security).
 
 ---
 
-## 15. Architecture trade-offs
-
-Three decisions worth defending, in short. The long versions are in
-[`docs/architecture.md`](docs/architecture.md).
-
-> **One database, not a stack.** I intentionally avoided unnecessary distributed
-> infrastructure. PostgreSQL serves as the transactional store, the full-text search
-> engine, and the vector store because the dataset and evaluation scope do not justify
-> introducing additional operational dependencies. One backup, one connection string, one
-> failure mode — and joins between chunks and their episode metadata are free.
-
-> **The agent is controlled, not autonomous.** Deterministic routing with a bounded set of
-> skills improves reliability, testing, latency, and operational debugging. Every turn
-> walks the same pipeline; there is no plan the model can invent, no tool loop that can run
-> away, and every stage boundary is a log line and a unit test.
-
-> **Memory is separated from transcript evidence.** Memory personalizes responses but is
-> never treated as authoritative evidence for Lenny-related claims. They live in separate
-> tables, arrive in separately labelled prompt blocks, are returned in separate response
-> fields, and only evidence is checked by the grounding validator.
-
----
-
-## 16. What is not built
+## Limitations
 
 Stated plainly, because pretending otherwise wastes an evaluator's time:
 
 - **No authentication or multi-tenancy.** Identity is a browser-local id.
-- **Grounding validation is lexical, not semantic.** It reliably catches off-corpus drift
-  and hallucinated citations; it does not verify truth, and a fluent paraphrase that reuses
-  evidence vocabulary can pass. The upgrade path (NLI or an LLM judge) is documented.
-- **The reranker is a fusion heuristic**, not a cross-encoder — a deliberate cost/latency
-  choice at this corpus size.
+- **Grounding validation is lexical, not semantic.** It catches off-corpus drift and
+  hallucinated citations; it does not verify truth, and a fluent paraphrase reusing
+  evidence vocabulary can pass. Upgrade path (NLI or an LLM judge) is documented.
+- **The reranker is a fusion heuristic**, not a cross-encoder — a cost/latency choice at
+  this corpus size.
 - **Ollama is not containerized.** It runs on the host for GPU/Metal access.
+- **Pi requires the non-Docker path**, since the backend image ships no Node.
 - **No evaluation harness.** The PRD proposes metrics; they are targets, not measurements.
 - **Cloud providers are implemented but were not exercised against live APIs** in this
-  build (no keys available in the build environment). They are covered by unit tests for
-  the configuration and error paths, and the abstraction is the same one Ollama uses.
+  build. Configuration and error paths are unit-tested, and the abstraction is the one
+  Ollama uses.
 
 ---
 
-## 17. Repository map
+## Repository map
 
 ```
 lenny-growth-assistant/
-├── backend/
-│   ├── app/
-│   │   ├── api/           chat (JSON + SSE), sessions, artifacts, memory, ingestion, health
-│   │   ├── agent/         controller · router · state · context_builder
-│   │   ├── skills/        rag · ship30 · artifact  (+ on-disk SKILL.md loader)
-│   │   ├── retrieval/     vector · keyword · reranker · evidence
-│   │   ├── llm/           base · ollama · cloud · stub · factory
-│   │   ├── embeddings/    ollama · openai · deterministic fallback
-│   │   ├── memory/        extractor · manager · retriever
-│   │   ├── grounding/     validator
-│   │   ├── ingestion/     loader · cleaner · chunker · indexer
-│   │   ├── security/      sanitizer
-│   │   ├── db/            models · database
-│   │   └── observability/ structured logging
-│   ├── alembic/           migrations
-│   └── tests/             119 tests
-├── frontend/
-│   ├── app/               Next.js App Router
-│   ├── components/        workspace · chat · sources · artifact viewer · memory · model badge
-│   ├── lib/               typed API client + SSE parser
-│   └── tests/             15 tests
-├── skills/
-│   ├── ship30/SKILL.md    the Ship 30 writing standard  ← editable without touching code
-│   └── artifact/SKILL.md  artifact generation rules
-├── scripts/
-│   ├── setup.sh           one-command setup for macOS / Linux
-│   └── setup.ps1          the same for Windows PowerShell
-├── docs/                  PRD · architecture · design · demo script · manual test plan
-├── agent-transcripts/     how this was built with an AI coding agent, including the bugs
-├── data/transcripts/      corpus (gitignored, fetched by `scripts/setup.*` or `make transcripts`)
-├── docker-compose.yml
-├── Makefile
-└── .env.example
+├── backend/app/
+│   ├── api/            chat (JSON + SSE), sessions, artifacts, memory, ingestion, health
+│   ├── agent/          controller · router · state · context_builder
+│   ├── skills/         rag · ship30 · artifact  (+ on-disk SKILL.md loader)
+│   ├── retrieval/      vector · keyword · reranker · evidence
+│   ├── llm/            base · ollama · cloud · pi_agent · stub · factory
+│   ├── embeddings/     ollama · openai · deterministic fallback
+│   ├── memory/         extractor · manager · retriever
+│   ├── grounding/      validator
+│   ├── ingestion/      loader · cleaner · chunker · indexer
+│   ├── security/       sanitizer
+│   └── db/ · observability/
+├── frontend/           Next.js App Router · components · typed API client + SSE parser
+├── scripts/            setup.sh · setup.ps1
+├── skills/             ship30/SKILL.md · artifact/SKILL.md  ← editable without touching code
+├── docs/               PRD · architecture · design · demo script · manual test plan
+├── agent-transcripts/  how this was built with an AI coding agent, including the bugs
+└── data/transcripts/   corpus (gitignored, fetched by scripts/setup.*)
 ```
 
 ---
