@@ -53,6 +53,21 @@ async def store_candidates(
     """Persist the candidates that clear the confidence/importance filter."""
     accepted = [c for c in candidates if passes_filter(c)]
     rejected = len(candidates) - len(accepted)
+
+    # One batch can state the same fact twice ("role: PM" from two turns). The
+    # loop below reads existing rows but only flushes at the end, and the
+    # session runs with autoflush=False, so a second candidate with the same
+    # (type, key) still looks new -- both get INSERTed and violate
+    # uq_memory_user_type_key, rolling back every memory in the batch. Collapse
+    # duplicates first, keeping the most confident statement of each fact,
+    # which is the same rule the upsert below applies across batches.
+    by_identity: dict[tuple[str, str], MemoryCandidate] = {}
+    for candidate in accepted:
+        prior = by_identity.get((candidate.type, candidate.key))
+        if prior is None or candidate.confidence > prior.confidence:
+            by_identity[(candidate.type, candidate.key)] = candidate
+    accepted = list(by_identity.values())
+
     stored: list[Memory] = []
 
     for candidate in accepted:

@@ -79,6 +79,34 @@ async def test_repeated_extraction_upserts_rather_than_duplicating(
     assert memories[0].confidence == pytest.approx(0.9)
 
 
+async def test_duplicate_candidates_in_one_batch_do_not_lose_the_batch(
+    db: AsyncSession, user: User
+) -> None:
+    """The extractor can state the same fact twice in a single batch.
+
+    Both used to be INSERTed -- the loop only flushes at the end and the session
+    is autoflush=False -- violating uq_memory_user_type_key and rolling back
+    every memory in the batch, including the unrelated ones.
+    """
+    stored = await manager.store_candidates(
+        db,
+        user.id,
+        [
+            MemoryCandidate("semantic", "role", "PM", 0.7, 0.8),
+            MemoryCandidate("semantic", "role", "Head of Growth", 0.9, 0.8),
+            MemoryCandidate("semantic", "company_stage", "seed", 0.8, 0.8),
+        ],
+    )
+    await db.commit()
+
+    memories = {m.key: m for m in await manager.list_memories(db, user.id)}
+    # The unrelated fact survived rather than being lost to the rollback.
+    assert set(memories) == {"role", "company_stage"}
+    # The more confident statement of the duplicated fact is the one kept.
+    assert memories["role"].value == "Head of Growth"
+    assert len(stored) == 2
+
+
 async def test_memory_retrieval_is_query_dependent(db: AsyncSession, user: User) -> None:
     await manager.store_candidates(
         db,

@@ -20,6 +20,7 @@ Failure policy per stage:
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 
 from sqlalchemy import select
@@ -29,6 +30,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.agent.router import classify
 from app.agent.state import AgentState, Phase
 from app.config import settings
+from app.db.database import get_sessionmaker
 from app.db.models import Artifact, Memory, Message, Session as ChatSession
 from app.errors import AppError, DatabaseError
 from app.grounding.validator import validate
@@ -287,8 +289,12 @@ async def handle_turn(
     state.enter(Phase.PERSISTED)
 
     # ------------------------------------------------- memory extraction
+    # Scheduled, not awaited. Extraction is a *second* model call and nothing in
+    # this response depends on it, so making the user wait for it added seconds
+    # to every Nth turn for no visible benefit. It runs on its own session after
+    # this one returns; see _schedule_memory_extraction.
     if settings.memory_enabled:
-        await _maybe_extract_memories(db, state, history, content, answer, provider)
+        _schedule_memory_extraction(state, history, content, answer, provider)
 
     state.enter(Phase.COMPLETED)
     log.info("request.completed", **state.summary())
@@ -321,33 +327,76 @@ async def handle_turn(
     )
 
 
-async def _maybe_extract_memories(
-    db: AsyncSession,
+# Strong references to in-flight extraction tasks. asyncio only holds a weak
+# reference to a running task, so without this the garbage collector can cancel
+# one mid-flight and the memory is silently never written.
+_extraction_tasks: set[asyncio.Task] = set()
+
+
+def _schedule_memory_extraction(
     state: AgentState,
     history: list[Message],
     query: str,
     answer: str,
     provider,
 ) -> None:
-    """Extraction runs every N turns, not every turn (MEMORY_EXTRACT_EVERY_N_TURNS)."""
+    """Queue extraction to run after this request returns.
+
+    Extraction runs every N turns, not every turn (MEMORY_EXTRACT_EVERY_N_TURNS).
+    That gate is checked here, synchronously, so a turn that owes no extraction
+    costs nothing at all.
+    """
     turn_index = len([m for m in history if m.role == "user"]) + 1
     if turn_index % max(1, settings.memory_extract_every_n_turns) != 0:
         return
+
+    # Snapshot to plain tuples *now*. `history` holds ORM objects bound to the
+    # request's session, and touching those after it closes raises.
+    conversation = [(m.role, m.content) for m in history[-6:]]
+    conversation.append(("user", query))
+    conversation.append(("assistant", answer[:1500]))
+
+    task = asyncio.create_task(
+        _extract_memories_detached(
+            conversation, state.user_id, state.session_id, provider, state.request_id
+        )
+    )
+    _extraction_tasks.add(task)
+    task.add_done_callback(_extraction_tasks.discard)
+
+
+async def _extract_memories_detached(
+    conversation: list[tuple[str, str]],
+    user_id: uuid.UUID,
+    session_id: uuid.UUID,
+    provider,
+    request_id: str | None,
+) -> None:
+    """Run extraction on its own session, outside the request lifecycle.
+
+    Nothing here can fail the user's turn — it has already been answered and
+    persisted. Failures are logged against the originating request_id rather
+    than surfaced as a response warning, because there is no longer a response
+    to attach one to.
+    """
+    maker = get_sessionmaker()
     try:
-        conversation = [(m.role, m.content) for m in history[-6:]]
-        conversation.append(("user", query))
-        conversation.append(("assistant", answer[:1500]))
         candidates = await extract_memories(provider, conversation)
-        if candidates:
-            await memory_manager.store_candidates(
-                db, state.user_id, candidates, source_session_id=state.session_id
-            )
-            await db.commit()
+        if not candidates:
+            return
+        async with maker() as db:
+            try:
+                await memory_manager.store_candidates(
+                    db, user_id, candidates, source_session_id=session_id
+                )
+                await db.commit()
+            except Exception:
+                await db.rollback()
+                raise
+        log.info("memory.extracted", count=len(candidates), request_id=request_id)
     except AppError as exc:
-        await db.rollback()
-        log.warning("memory.store_failed", code=exc.code, error=exc.message)
-        state.warn("Could not update personalization for this turn.")
+        log.warning("memory.store_failed", code=exc.code, error=exc.message, request_id=request_id)
+    except asyncio.CancelledError:
+        raise
     except Exception as exc:
-        await db.rollback()
-        log.warning("memory.store_failed", error=str(exc)[:200])
-        state.warn("Could not update personalization for this turn.")
+        log.warning("memory.store_failed", error=str(exc)[:200], request_id=request_id)

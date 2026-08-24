@@ -86,7 +86,7 @@ Deeper documents: [PRD](docs/PRD.md) · [architecture.md](docs/architecture.md) 
 | **Ship 30 essays** | A skill file (`skills/ship30/SKILL.md`) encodes the writing standard; the agent enforces length and grounding |
 | **Artifacts** | Markdown and complete HTML/CSS, sanitized server-side and rendered in a fully sandboxed iframe |
 | **Model flexibility** | Local Ollama, Anthropic/OpenAI, or the Pi agent — no code change, provider always visible in the UI |
-| **Operability** | One-command startup, structured JSON logs, dependency-level health checks, typed errors, 130 backend + 34 frontend tests |
+| **Operability** | One-command startup, structured JSON logs, dependency-level health checks, typed errors, 153 backend + 34 frontend tests |
 
 ---
 
@@ -350,7 +350,7 @@ make typecheck       # tsc --noEmit
 make test
 ```
 
-**Backend — 130 tests** (`backend/tests/`), against a real Postgres + pgvector, using the
+**Backend — 153 tests** (`backend/tests/`), against a real Postgres + pgvector, using the
 deterministic stub provider and embedder so no model server or API key is needed. Covers
 health and session CRUD, the structured error envelope, end-to-end chat per route, session
 isolation, SSE streaming, refusal with no evidence, all three retrieval legs and fusion,
