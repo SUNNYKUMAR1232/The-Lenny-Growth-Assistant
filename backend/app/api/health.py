@@ -24,7 +24,7 @@ from app.db.database import get_db
 from app.embeddings.factory import get_embedder
 from app.llm.factory import get_provider
 from app.observability.logging import get_logger
-from app.schemas.contracts import ComponentHealth, HealthResponse, ModelInfo
+from app.schemas.contracts import ComponentHealth, HealthResponse
 
 router = APIRouter(tags=["health"])
 log = get_logger("api.health")
@@ -54,9 +54,59 @@ async def _check_database(db: AsyncSession) -> ComponentHealth:
         return ComponentHealth(status="down", detail="PostgreSQL is unreachable.")
 
 
+async def _check_knowledge_base(db: AsyncSession) -> ComponentHealth:
+    """An un-ingested corpus is the single most common "why does it refuse
+    everything?" cause. It is a first-class health signal, not a footnote."""
+    started = time.perf_counter()
+    try:
+        documents = (
+            await db.execute(text("SELECT count(*) FROM documents"))
+        ).scalar_one()
+        chunks = (await db.execute(text("SELECT count(*) FROM chunks"))).scalar_one()
+        embedded = (
+            await db.execute(
+                text("SELECT count(*) FROM chunks WHERE embedding IS NOT NULL")
+            )
+        ).scalar_one()
+        latency = round((time.perf_counter() - started) * 1000, 2)
+
+        if chunks == 0:
+            return ComponentHealth(
+                status="degraded",
+                detail=(
+                    "No transcripts indexed. Run `make ingest LIMIT=25` (or "
+                    "`docker compose exec backend python -m app.scripts.ingest "
+                    "--limit 25`). Until then every answer will be a refusal."
+                ),
+                latency_ms=latency,
+            )
+        if embedded == 0:
+            return ComponentHealth(
+                status="degraded",
+                detail=(
+                    f"{documents} documents / {chunks} chunks indexed, but none are "
+                    "embedded — keyword search only. Re-run ingestion with the "
+                    "embedding model available."
+                ),
+                latency_ms=latency,
+            )
+        return ComponentHealth(
+            status="ok",
+            detail=f"{documents} episodes, {chunks} chunks, {embedded} embedded",
+            latency_ms=latency,
+        )
+    except Exception as exc:
+        log.error("database.error", stage="health_knowledge_base", error=str(exc))
+        return ComponentHealth(
+            status="down", detail="Knowledge base tables are unreadable; run migrations."
+        )
+
+
 @router.get("/health", response_model=HealthResponse)
 async def health(db: AsyncSession = Depends(get_db)) -> HealthResponse:
     components: dict[str, ComponentHealth] = {"database": await _check_database(db)}
+    if components["database"].status != "down":
+        components["knowledge_base"] = await _check_knowledge_base(db)
 
     provider = get_provider()
     available, detail = await provider.health()
@@ -82,31 +132,4 @@ async def health(db: AsyncSession = Depends(get_db)) -> HealthResponse:
         version=VERSION,
         environment=settings.app_env,
         components=components,
-    )
-
-
-@router.get("/api/model", response_model=ModelInfo, tags=["model"])
-async def model_status() -> ModelInfo:
-    """What the UI's model badge reads."""
-    provider = get_provider()
-    available, detail = await provider.health()
-    fallback = None
-    if not available and settings.llm_provider == "ollama":
-        fallback = (
-            "No automatic cloud fallback: set LLM_PROVIDER=cloud explicitly to switch."
-        )
-    return ModelInfo(
-        provider=settings.llm_provider,  # type: ignore[arg-type]
-        model=provider.model,
-        label=provider.label(),
-        cloud_provider=settings.cloud_provider if settings.llm_provider == "cloud" else None,
-        embedding_provider=settings.embedding_provider,
-        embedding_model=(
-            settings.ollama_embedding_model
-            if settings.embedding_provider == "ollama"
-            else settings.embedding_provider
-        ),
-        available=available,
-        detail=detail,
-        fallback=fallback,
     )

@@ -10,9 +10,11 @@ import type {
   SessionSummary,
 } from "@/lib/types";
 import ArtifactViewer from "./ArtifactViewer";
+import Markdown from "./Markdown";
 import MemoryPanel from "./MemoryPanel";
 import MessageBubble from "./MessageBubble";
 import ModelBadge from "./ModelBadge";
+import ModelSettings from "./ModelSettings";
 import PipelineStatus, { type PipelineStage } from "./PipelineStatus";
 import SessionSidebar from "./SessionSidebar";
 
@@ -58,6 +60,7 @@ export default function AssistantWorkspace() {
   const [memoryOpen, setMemoryOpen] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [artifactOpen, setArtifactOpen] = useState(false);
+  const [modelSettingsOpen, setModelSettingsOpen] = useState(false);
 
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -276,6 +279,7 @@ export default function AssistantWorkspace() {
   };
 
   const emptyState = useMemo(() => messages.length === 0 && !busy, [messages.length, busy]);
+  const knowledgeBase = health?.components?.knowledge_base ?? null;
 
   return (
     <div className="flex h-dvh flex-col bg-surface">
@@ -292,11 +296,16 @@ export default function AssistantWorkspace() {
           </svg>
         </button>
 
-        <h1 className="mr-auto truncate text-sm font-semibold tracking-tight sm:text-base">
+        {/* At 390px there is not enough room for the title next to the model
+            badge and controls — it truncated to "L...". Hidden below `sm`;
+            the model badge carries the context there. */}
+        <h1 className="hidden truncate text-sm font-semibold tracking-tight sm:mr-auto sm:block sm:text-base">
           Lenny Growth Assistant
         </h1>
 
-        <ModelBadge model={model} health={health} />
+        <div className="ml-auto">
+          <ModelBadge model={model} health={health} onConfigure={() => setModelSettingsOpen(true)} />
+        </div>
 
         <button className="btn px-2 py-1.5 text-xs" onClick={() => setMemoryOpen(true)}>
           Memory
@@ -317,14 +326,31 @@ export default function AssistantWorkspace() {
             </svg>
           )}
         </button>
-        <button
-          className="btn px-2 py-1.5 text-xs lg:hidden"
-          onClick={() => setArtifactOpen((value) => !value)}
-          aria-expanded={artifactOpen}
-        >
-          Artifact
-        </button>
+        {artifact && (
+          <button
+            className="btn px-2 py-1.5 text-xs lg:hidden"
+            onClick={() => setArtifactOpen((value) => !value)}
+            aria-expanded={artifactOpen}
+          >
+            Artifact
+          </button>
+        )}
       </header>
+
+      {/* An un-ingested corpus makes every answer a refusal, which reads like
+          a broken product. Say what is actually wrong, once, at the top. */}
+      {knowledgeBase && knowledgeBase.status !== "ok" && (
+        <div
+          role="status"
+          className="flex flex-wrap items-start gap-x-3 gap-y-1 border-b border-warn/30 bg-warn/5 px-4 py-2.5 text-sm"
+        >
+          <span className="font-medium text-warn">Knowledge base not ready</span>
+          <p className="flex-1 text-ink-muted">{knowledgeBase.detail}</p>
+          <code className="rounded bg-surface-sunken px-1.5 py-0.5 font-mono text-xs">
+            make ingest LIMIT=25
+          </code>
+        </div>
+      )}
 
       {error && (
         <div
@@ -391,7 +417,12 @@ export default function AssistantWorkspace() {
               {streamed && (
                 <article className="animate-fade-up" aria-label="Assistant response in progress">
                   <div className="rounded-2xl rounded-tl-md border border-line bg-surface-raised px-4 py-3">
-                    <p className="whitespace-pre-wrap text-[15px] leading-relaxed">{streamed}</p>
+                    {/* Rendered as Markdown while it streams, not as plain
+                        text: otherwise the reader watches raw `**bold**` and
+                        `## headings` scroll past and only sees formatting once
+                        the final message replaces the stream. */}
+                    <Markdown>{streamed}</Markdown>
+                    <span className="caret" aria-hidden="true" />
                   </div>
                 </article>
               )}
@@ -417,6 +448,9 @@ export default function AssistantWorkspace() {
                 id="composer"
                 ref={inputRef}
                 rows={1}
+                // min-h keeps a two-line placeholder from being clipped on
+                // narrow viewports before the auto-grow handler runs.
+                style={{ minHeight: "3rem" }}
                 value={input}
                 disabled={busy}
                 onChange={(event) => {
@@ -430,7 +464,7 @@ export default function AssistantWorkspace() {
                     void send(input);
                   }
                 }}
-                placeholder="Ask about product, growth, retention… or ask for an essay or artifact"
+                placeholder="Ask a growth question…"
                 className="max-h-48 min-h-[44px] flex-1 resize-none rounded-xl border border-line bg-surface-raised px-3.5 py-2.5 text-[15px] leading-relaxed placeholder:text-ink-faint focus:border-accent focus:outline-none disabled:opacity-60"
               />
               <button
@@ -442,22 +476,38 @@ export default function AssistantWorkspace() {
               </button>
             </form>
             <p className="mx-auto mt-2 max-w-3xl text-xs text-ink-faint">
-              Grounded in Lenny&apos;s Podcast transcripts. Claims are checked against retrieved
-              excerpts; unsupported answers are flagged or withheld.
+              Grounded in transcript evidence. Ask for an essay or an artifact and it renders
+              beside the chat.
             </p>
           </div>
         </main>
 
+        {/* The artifact pane only earns its half of the screen once there is
+            an artifact in it. Empty, it used to occupy 46% of a 1440px window
+            to say "No artifact yet" while the conversation wrapped every six
+            words. It now collapses entirely and the chat takes the room. */}
         <aside
           className={`${
             artifactOpen ? "absolute inset-0 z-30 bg-surface" : "hidden"
-          } lg:static lg:block lg:w-[46%] lg:max-w-2xl lg:border-l lg:border-line`}
+          } ${
+            artifact ? "lg:static lg:block lg:w-[44%] lg:max-w-2xl lg:border-l lg:border-line" : ""
+          }`}
         >
           <ArtifactViewer artifact={artifact} onClose={() => setArtifactOpen(false)} />
         </aside>
       </div>
 
       <MemoryPanel userId={userId} open={memoryOpen} onClose={() => setMemoryOpen(false)} />
+
+      <ModelSettings
+        open={modelSettingsOpen}
+        model={model}
+        onClose={() => setModelSettingsOpen(false)}
+        onSaved={(updated) => {
+          setModel(updated);
+          void api.health().then(setHealth).catch(() => undefined);
+        }}
+      />
     </div>
   );
 }

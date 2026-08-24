@@ -114,13 +114,44 @@ async def test_ship30_route_produces_markdown_artifact(client: AsyncClient) -> N
     assert body["message"]["metadata"]["skill"]["word_count"] > 0
 
 
-async def test_question_with_no_evidence_refuses_instead_of_inventing(
+async def test_question_with_no_matching_evidence_refuses_instead_of_inventing(
+    client: AsyncClient, corpus, monkeypatch
+) -> None:
+    """A populated corpus that simply does not cover the question.
+
+    The vector floor is raised so the semantic leg returns nothing, and the
+    question shares no vocabulary with the seeded episodes — so both legs come
+    back empty while the knowledge base is demonstrably NOT empty. The skill
+    must refuse without ever calling the model.
+    """
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "retrieval_min_vector_similarity", 0.99)
+
+    session_id = await _new_session(client)
+    body = (
+        await client.post(
+            f"/api/sessions/{session_id}/messages",
+            json={"content": "Describe medieval Bavarian falconry equipment."},
+        )
+    ).json()
+
+    assert body["evidence"] == []
+    assert "couldn't find" in body["message"]["content"].lower()
+    assert "No transcript evidence matched this question." in body["warnings"]
+    assert body["message"]["metadata"]["skill"]["llm_called"] is False
+    # Crucially: NOT the "run ingestion" message — the corpus is populated.
+    assert "knowledge base is empty" not in body["message"]["content"].lower()
+
+
+async def test_empty_knowledge_base_tells_the_operator_to_ingest(
     client: AsyncClient, db
 ) -> None:
-    """With nothing retrievable, the assistant must refuse rather than answer.
+    """Nothing indexed at all is an operator problem, not a retrieval result.
 
-    The corpus is emptied for this test so the Evidence Pack is genuinely
-    empty — the condition the RAG skill short-circuits on.
+    Saying "I couldn't find anything in the transcripts" here sends whoever is
+    running the stack off debugging retrieval, when the actual fix is one
+    ingestion command. The two cases must read differently.
     """
     from sqlalchemy import text
 
@@ -131,14 +162,28 @@ async def test_question_with_no_evidence_refuses_instead_of_inventing(
     body = (
         await client.post(
             f"/api/sessions/{session_id}/messages",
-            json={"content": "What is the airspeed velocity of an unladen swallow?"},
+            json={"content": "How do teams think about retention?"},
         )
     ).json()
 
+    content = body["message"]["content"].lower()
     assert body["evidence"] == []
-    assert "couldn't find" in body["message"]["content"].lower()
-    assert "No transcript evidence matched this question." in body["warnings"]
-    assert body["message"]["metadata"]["skill"]["llm_called"] is False
+    assert "knowledge base is empty" in content
+    assert "ingest" in content
+    assert body["message"]["metadata"]["skill"]["corpus_empty"] is True
+
+
+async def test_health_flags_an_empty_knowledge_base(client: AsyncClient, db) -> None:
+    from sqlalchemy import text
+
+    await db.execute(text("DELETE FROM documents"))
+    await db.commit()
+
+    body = (await client.get("/health")).json()
+    knowledge = body["components"]["knowledge_base"]
+    assert knowledge["status"] == "degraded"
+    assert "ingest" in (knowledge["detail"] or "").lower()
+    assert body["status"] == "degraded"
 
 
 async def test_streaming_endpoint_emits_pipeline_events(client: AsyncClient) -> None:

@@ -10,7 +10,7 @@ import uuid
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 Role = Literal["user", "assistant", "system"]
 RouteName = Literal["KNOWLEDGE_Q", "SHIP30", "ARTIFACT"]
@@ -37,7 +37,7 @@ class HealthResponse(BaseModel):
 
 
 class ModelInfo(BaseModel):
-    provider: Literal["ollama", "cloud", "stub"]
+    provider: Literal["ollama", "cloud", "pi", "stub"]
     model: str
     label: str
     cloud_provider: str | None = None
@@ -46,6 +46,66 @@ class ModelInfo(BaseModel):
     available: bool
     detail: str | None = None
     fallback: str | None = None
+    # Whether the active configuration came from `.env` or from the UI, and
+    # whether the UI is allowed to change it on this deployment.
+    source: Literal["environment", "runtime"] = "environment"
+    configurable: bool = True
+
+
+class ModelConfigRequest(BaseModel):
+    """A proposed provider configuration from the model-settings panel."""
+
+    provider: Literal["ollama", "anthropic", "openai", "pi"]
+    model: str | None = Field(default=None, max_length=200)
+    # Pi only: which backend Pi should drive (anthropic, openai, ollama, …).
+    agent_backend: str | None = Field(default=None, max_length=64)
+    base_url: str | None = Field(default=None, max_length=500)
+    # Write-only. Never echoed back by any response model.
+    api_key: str | None = Field(default=None, max_length=500, repr=False)
+
+    @field_validator("base_url")
+    @classmethod
+    def _validate_base_url(cls, value: str | None) -> str | None:
+        if not value:
+            return None
+        candidate = value.strip().rstrip("/")
+        if not candidate.startswith(("http://", "https://")):
+            raise ValueError("base_url must start with http:// or https://")
+        return candidate
+
+    @field_validator("api_key")
+    @classmethod
+    def _strip_key(cls, value: str | None) -> str | None:
+        return value.strip() if value and value.strip() else None
+
+
+class ModelProviderOption(BaseModel):
+    id: Literal["ollama", "anthropic", "openai", "pi"]
+    label: str
+    needs_api_key: bool
+    needs_base_url: bool
+    default_base_url: str | None = None
+    models: list[str] = Field(default_factory=list)
+    help: str | None = None
+    # Pi drives another provider underneath; the panel renders this as a
+    # second select ("agent backend") when the list is non-empty.
+    backends: list[str] = Field(default_factory=list)
+
+
+class ModelOptionsResponse(BaseModel):
+    configurable: bool
+    providers: list[ModelProviderOption]
+
+
+class ModelConfigResponse(BaseModel):
+    config: dict[str, Any]
+    model: ModelInfo
+
+
+class ModelTestResponse(BaseModel):
+    ok: bool
+    detail: str
+    label: str
 
 
 # ------------------------------------------------------------------- sessions
@@ -122,6 +182,9 @@ class EvidencePack(BaseModel):
     latency_ms: float = 0.0
     degraded: bool = False
     degraded_reason: str | None = None
+    # True only when the chunks table itself is empty — "nothing is indexed",
+    # not "nothing matched". The two need different answers and different fixes.
+    corpus_empty: bool = False
 
     @property
     def is_empty(self) -> bool:

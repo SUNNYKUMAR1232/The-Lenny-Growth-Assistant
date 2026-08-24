@@ -23,6 +23,7 @@ from app.errors import LLMError
 from app.llm.base import ChatMessage
 from app.observability.logging import get_logger
 from app.skills.base import Skill, SkillContext, SkillResult, load_skill_file
+from app.skills.rag import EMPTY_CORPUS_REPLY
 
 log = get_logger("skills.ship30")
 
@@ -50,8 +51,16 @@ class Ship30Skill(Skill):
         if ctx.evidence.is_empty:
             log.info("skill.short_circuit", skill=self.name, reason="empty_evidence")
             return SkillResult(
-                text=NO_EVIDENCE_REPLY,
-                metadata={"skill": self.name, "llm_called": False},
+                text=(
+                    EMPTY_CORPUS_REPLY
+                    if ctx.evidence.corpus_empty
+                    else NO_EVIDENCE_REPLY
+                ),
+                metadata={
+                    "skill": self.name,
+                    "llm_called": False,
+                    "corpus_empty": ctx.evidence.corpus_empty,
+                },
                 require_evidence=False,
             )
 

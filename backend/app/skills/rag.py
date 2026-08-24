@@ -35,6 +35,26 @@ NO_EVIDENCE_REPLY = (
     "product-market fit, pricing, team structure, or hiring."
 )
 
+# Distinct from the above on purpose: nothing is indexed, so *every* question
+# would come back empty. Telling the operator "no evidence" here would send
+# them debugging retrieval instead of running ingestion.
+EMPTY_CORPUS_REPLY = (
+    "**The knowledge base is empty — no transcripts have been indexed yet.**\n\n"
+    "Every question will come back unanswered until ingestion runs. From the "
+    "repository root:\n\n"
+    "```bash\n"
+    "make transcripts            # clone the episode archive into data/transcripts\n"
+    "make ingest LIMIT=25        # chunk, embed and index the first 25 episodes\n"
+    "```\n\n"
+    "With Docker Compose:\n\n"
+    "```bash\n"
+    "docker compose exec backend python -m app.scripts.ingest --limit 25\n"
+    "docker compose exec backend python -m app.scripts.ingest --stats\n"
+    "```\n\n"
+    "`--stats` prints what is indexed; `/health` reports the same under "
+    "`knowledge_base`."
+)
+
 
 class RAGSkill(Skill):
     name = "rag"
@@ -44,8 +64,16 @@ class RAGSkill(Skill):
         if ctx.evidence.is_empty:
             log.info("skill.short_circuit", skill=self.name, reason="empty_evidence")
             return SkillResult(
-                text=NO_EVIDENCE_REPLY,
-                metadata={"skill": self.name, "llm_called": False},
+                text=(
+                    EMPTY_CORPUS_REPLY
+                    if ctx.evidence.corpus_empty
+                    else NO_EVIDENCE_REPLY
+                ),
+                metadata={
+                    "skill": self.name,
+                    "llm_called": False,
+                    "corpus_empty": ctx.evidence.corpus_empty,
+                },
                 require_evidence=False,
             )
 

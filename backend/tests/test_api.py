@@ -13,7 +13,12 @@ async def test_health_reports_components(client: AsyncClient) -> None:
     body = response.json()
     assert body["status"] in {"ok", "degraded"}
     assert body["components"]["database"]["status"] == "ok"
-    assert set(body["components"]) == {"database", "model", "embeddings"}
+    assert set(body["components"]) == {
+        "database",
+        "knowledge_base",
+        "model",
+        "embeddings",
+    }
 
 
 async def test_model_endpoint_exposes_active_provider(client: AsyncClient) -> None:

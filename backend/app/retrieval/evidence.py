@@ -22,7 +22,7 @@ from __future__ import annotations
 import re
 import time
 
-from sqlalchemy import select
+from sqlalchemy import literal, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -59,6 +59,23 @@ def choose_strategy(query: str, route: str | None = None) -> str:
     if COMPARATIVE_PATTERNS.search(query) or SYNTHESIS_PATTERNS.search(query):
         return "episode"
     return "chunk"
+
+
+async def knowledge_base_is_empty(session: AsyncSession) -> bool:
+    """Is there anything indexed at all?
+
+    `EXISTS` rather than `COUNT`: Postgres stops at the first row, so this
+    stays sub-millisecond on a 20k-chunk corpus and costs nothing on an empty
+    one.
+    """
+    try:
+        found = (
+            await session.execute(select(literal(1)).select_from(Chunk).limit(1))
+        ).scalar_one_or_none()
+        return found is None
+    except SQLAlchemyError as exc:  # pragma: no cover - diagnostic path only
+        log.error("database.error", stage="corpus_check", error=str(exc))
+        return False
 
 
 def _to_evidence_item(candidate: Candidate, tag_index: int) -> EvidenceItem:
@@ -210,6 +227,15 @@ async def retrieve_evidence(
     if settings.retrieval_min_score > 0:
         evidence = [e for e in evidence if e.score >= settings.retrieval_min_score]
 
+    # An empty result has two very different causes, and conflating them sends
+    # an operator hunting a retrieval bug when the real answer is "you never
+    # ran ingestion". Only pay for the check when there is nothing to return.
+    corpus_empty = False
+    if not evidence:
+        corpus_empty = await knowledge_base_is_empty(session)
+        if corpus_empty:
+            log.warning("retrieval.corpus_empty", query_chars=len(query))
+
     pack = EvidencePack(
         query=query,
         strategy=strategy,  # type: ignore[arg-type]
@@ -219,6 +245,7 @@ async def retrieve_evidence(
         latency_ms=round((time.perf_counter() - started) * 1000, 2),
         degraded=degraded,
         degraded_reason=degraded_reason,
+        corpus_empty=corpus_empty,
     )
 
     log.info(
