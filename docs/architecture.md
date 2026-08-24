@@ -408,6 +408,54 @@ messages (`ollama pull llama3.1:8b`, `Is ollama serve running?`).
 Errors are mapped, not leaked: timeout → `MODEL_TIMEOUT` (504), missing model / unreachable
 → `MODEL_UNAVAILABLE` (503), missing key → `MODEL_NOT_CONFIGURED` (503).
 
+## The agent layer (Pi Coding Agent)
+
+The assignment requires the agent layer to be built on the Anthropic Claude Agent SDK or
+the Pi Coding Agent. This build uses **Pi**, wired in as a provider behind the same
+`LLMProvider` interface as Ollama and the cloud SDKs (`app/llm/pi_agent.py`).
+
+```
+Controller ──> retrieval ──> Evidence Pack ──┐
+                                             ├─> Pi CLI subprocess ──> NDJSON ──> text
+   memory ──> context builder ───────────────┘        (no tools)
+                                             └─> grounding validator ──> response
+```
+
+**Why a subprocess.** Pi ships as a Node CLI with a headless mode (`--print --mode json`);
+that is its supported non-interactive interface. Running it out-of-process is also a
+feature here: a hung or crashed agent cannot take the API down with it, and the timeout
+is enforced by killing a process rather than by hoping a library honours a deadline.
+
+**Why every tool is disabled.** Pi is a *coding* agent — read, bash, edit, write. In a
+grounded-answer path those tools are all downside: the evidence has already been
+retrieved by the controller, and a filesystem or shell tool only adds ways for a model to
+go somewhere it should not. The invocation is therefore
+`--no-tools --no-session --no-extensions --no-skills --no-context-files
+--no-prompt-templates`, in an empty temp directory. What survives is the part we want —
+a bounded generation step — and the controlled architecture is preserved rather than
+replaced by an autonomous loop.
+
+**Credentials.** Passed through the child process's environment, never argv, because
+`/proc/<pid>/cmdline` is world-readable and an environment is not.
+
+**Failure mapping.** Pi reports failures as `errorMessage` on an assistant message with
+`stopReason: "error"`. Those are mapped onto the same typed errors as every other
+provider: `MODEL_NOT_CONFIGURED` for auth and unknown-model failures,
+`MODEL_UNAVAILABLE` for an unreachable backend, `MODEL_TIMEOUT` for a stall. The UI
+cannot tell which provider produced an error, and does not need to.
+
+**Streaming** is coarse-grained: `--mode json` emits whole messages rather than token
+deltas, so the SSE stream fills in larger steps than with Ollama. The contract is
+unchanged.
+
+**Claude Agent SDK, considered.** It works and is Python-native, but it depends on
+`mcp` 2.0, which requires `starlette>=1.6` and breaks FastAPI 0.116. FastAPI was moved to
+0.141.1 (`starlette>=0.46`, no upper bound) so both can coexist in one environment; Pi
+was chosen because it can also drive a local model, which keeps the mandatory Ollama
+demo running through the same agent code path rather than a second one.
+
+---
+
 ## Grounding
 
 ```
@@ -436,6 +484,31 @@ worth it once M1 evaluation shows where the misses actually are.
 
 For artifacts, the *artifact body* is validated rather than the one-line chat message,
 because that is where the claims live.
+
+## Runtime model configuration
+
+`.env` is the source of truth at boot. `POST /api/model/config` adds an in-process
+override so an evaluator can switch provider or paste a key from the browser without
+editing files and restarting (`app/llm/runtime_config.py`).
+
+The constraints are the design:
+
+- **Memory only.** No row, no file. Nothing to leak in a backup or a commit.
+- **Write-only keys.** A key goes in; reads return `api_key_set` and the last four
+  characters. Asserted by tests, including that no other endpoint echoes it.
+- **Env wins on restart**, so an override can never quietly become a deployment's
+  permanent state.
+- **Vendor-scoped.** The "keep the existing key when the form is re-saved" convenience
+  matches on `(provider, vendor)`. An earlier version matched on provider alone, which
+  would have carried an Anthropic key over to an OpenAI endpoint when the user switched
+  vendor — caught by a test, and the reason that test exists.
+- **Switchable off** with `ALLOW_RUNTIME_MODEL_CONFIG=false`, the right setting for any
+  shared deployment.
+
+`POST /api/model/test` verifies the *submitted* configuration with one real call and
+always restores the previous state, so a bad key never becomes the active provider.
+
+---
 
 ## Artifact security
 

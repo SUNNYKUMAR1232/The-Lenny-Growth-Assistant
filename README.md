@@ -40,6 +40,7 @@ episode deep links, and an artifact in the sandboxed viewer — are in
 3. [Prerequisites](#3-prerequisites)
 4. [Quick start (Docker)](#4-quick-start-docker)
 5. [Quick start (local, no Docker)](#5-quick-start-local-no-docker)
+5b. [Running on Windows (Command Prompt)](#5b-running-on-windows-command-prompt)
 6. [Transcript setup](#6-transcript-setup)
 7. [Model configuration](#7-model-configuration)
 8. [Environment variables](#8-environment-variables)
@@ -207,6 +208,84 @@ make dev-frontend       # terminal 2 → http://localhost:3000
 
 ---
 
+## 5b. Running on Windows (Command Prompt)
+
+`make` does not exist in `cmd`, so run what the Makefile would. Docker Desktop is the
+easiest path.
+
+```cmd
+git clone <your-repo-url> lenny-growth-assistant
+cd lenny-growth-assistant
+copy .env.example .env
+```
+
+Edit `.env` and set the one line that differs on Windows containers:
+
+```
+OLLAMA_BASE_URL=http://host.docker.internal:11434
+```
+
+Pull the models (Ollama for Windows runs as a background service once installed):
+
+```cmd
+ollama pull llama3.1:8b
+ollama pull nomic-embed-text
+```
+
+Transcripts, the `make transcripts` equivalent:
+
+```cmd
+git clone --depth 1 https://github.com/ChatPRD/lennys-podcast-transcripts.git data\transcripts\_archive
+move data\transcripts\_archive\episodes data\transcripts\episodes
+rmdir /s /q data\transcripts\_archive
+```
+
+Start the stack, then index in a second window:
+
+```cmd
+docker compose up --build
+
+docker compose exec backend python -m app.scripts.ingest --limit 25
+docker compose exec backend python -m app.scripts.ingest --stats
+curl http://localhost:8000/health
+```
+
+Open <http://localhost:3000>.
+
+**Without Docker for the app** (Postgres still needs pgvector, so keep that in a
+container):
+
+```cmd
+docker run -d --name lga-pg -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=lenny -p 5432:5432 pgvector/pgvector:pg16
+
+cd backend
+python -m venv .venv
+.venv\Scripts\activate
+pip install -r requirements-dev.txt
+set DATABASE_URL=postgresql+asyncpg://postgres:postgres@localhost:5432/lenny
+alembic upgrade head
+python -m app.scripts.ingest --limit 25
+uvicorn app.main:app --reload --port 8000
+```
+
+```cmd
+cd frontend
+npm install
+npm run dev
+```
+
+Windows-specific gotchas:
+
+- `set VAR=value` takes **no quotes** and lasts only for that window. Anything permanent
+  belongs in `.env`. PowerShell uses `$env:VAR="value"`.
+- Use `move` / `rmdir /s /q` instead of `mv` / `rm -rf`, and backslashes in paths.
+- If port 5432 is already taken by a local Postgres, publish `-p 5433:5432` and use
+  `...@localhost:5433/lenny`.
+- Amber model badge means Ollama is unreachable: check `ollama list`, and that `.env`
+  uses `host.docker.internal` for Docker and `localhost` for the local path.
+
+---
+
 ## 6. Transcript setup
 
 **Where the data comes from.** The corpus is the public archive
@@ -277,6 +356,25 @@ CLOUD_MODEL=claude-sonnet-4-5
 ANTHROPIC_API_KEY=sk-ant-...
 ```
 
+### Switching models from the UI (no restart, no `.env` edit)
+
+Click the model badge in the header → **Configure model / connect a cloud provider**.
+The panel lets you pick a provider, a model, a base URL and paste an API key, test the
+connection with one real call, and save — the next message uses it.
+
+How the key is handled, because it is a credential in a browser form:
+
+| | |
+|---|---|
+| Stored | In the backend process's memory only. No database row, no file, nothing to leak in a backup or a `git add`. |
+| Returned | Never. Reads report `api_key_set: true` plus the last four characters (`…9f2a`) so you can tell two keys apart. |
+| Logged | Never. The call site logs `api_key_set`, and a redaction processor scrubs credential-shaped fields as a second line of defence. Both are asserted by tests. |
+| Lifetime | Until the backend restarts, which always returns to the documented `.env` configuration. |
+| Disabled by | `ALLOW_RUNTIME_MODEL_CONFIG=false` — set this for any shared deployment, where models belong in the environment. The endpoint then returns `MODEL_CONFIG_LOCKED`. |
+
+Switching vendor clears the key field in both the UI and the backend, so an Anthropic
+key can never be submitted against an OpenAI endpoint.
+
 The active provider is always shown in the UI header (click the badge for model,
 embedding provider, and per-dependency health) and returned by `GET /api/model`.
 
@@ -289,7 +387,51 @@ There *is* one automatic degradation, and the UI announces it: if the **embeddin
 is unavailable, retrieval degrades to keyword-only rather than failing the request
 (`EMBEDDING_ALLOW_FALLBACK=true`). The response is marked degraded and the reason is shown.
 
-A third provider, `LLM_PROVIDER=stub`, is a deterministic test double used by the test
+### The agent layer: Pi Coding Agent
+
+The assignment asks for the agent layer to be built on the Anthropic Claude Agent SDK
+**or** the Pi Coding Agent. This repository uses **Pi**.
+
+```bash
+npm install -g @earendil-works/pi-coding-agent
+```
+
+```env
+LLM_PROVIDER=pi
+PI_PROVIDER=anthropic        # anthropic | openai | google | ollama
+PI_MODEL=claude-sonnet-4-5   # with PI_PROVIDER=ollama, e.g. llama3.1:8b
+```
+
+…or pick **Pi Coding Agent** in the model settings panel and choose the backend it
+drives. `PI_PROVIDER=ollama` keeps the whole path local.
+
+Pi is a Node CLI with a headless mode, so it runs as a subprocess speaking NDJSON
+(`pi --print --mode json`). Two consequences worth stating plainly:
+
+- **It is bounded on purpose.** Pi is invoked with `--no-tools --no-session
+  --no-extensions --no-skills --no-context-files --no-prompt-templates`, in an empty
+  temp directory. A coding agent's read/bash/edit/write tools have no place in a
+  grounded-answer path: the controller has already retrieved the evidence, and the
+  agent's job is to reason over exactly what it was handed. This keeps the controlled
+  architecture intact instead of fighting it.
+- **Credentials go through the environment, never argv.** A command line is
+  world-readable in `/proc`; an environment is not.
+
+Health is `pi auth check --provider <p> --json` — no model call, no cost.
+
+**Verified so far:** CLI discovery, the bounded invocation, NDJSON parsing (fixtures in
+`tests/test_pi_agent.py` are real recorded output from Pi v0.84.2), health checks, and
+error mapping — including a live subprocess run that correctly surfaced an
+authentication failure as `MODEL_NOT_CONFIGURED`. A *successful* generation needs either
+a real API key or a running Ollama, neither of which existed in the build environment, so
+that last mile is the evaluator's to confirm.
+
+*Why not the Claude Agent SDK:* it was evaluated first and works, but it pulls `mcp` 2.0,
+which requires `starlette>=1.6` and breaks FastAPI 0.116. FastAPI was upgraded to 0.141.1
+(`starlette>=0.46`, no upper bound) so either path can coexist; Pi was chosen because it
+also drives local models, which keeps the mandatory Ollama demo on the same agent code.
+
+A fourth provider, `LLM_PROVIDER=stub`, is a deterministic test double used by the test
 suite. It is not a model; it reports itself as `stub/deterministic` and is never used for
 a demo.
 
@@ -410,6 +552,21 @@ Codes the UI branches on: `SESSION_NOT_FOUND`, `VALIDATION_ERROR`, `DATABASE_UNA
 
 ---
 
+### Model configuration endpoints
+
+| Method | Path | Purpose |
+|---|---|---|
+| `GET` | `/api/model` | Active provider, model, embedding provider, availability |
+| `GET` | `/api/model/options` | Providers and preset models the settings panel offers |
+| `POST` | `/api/model/test` | Verify a *proposed* configuration with one real call |
+| `POST` | `/api/model/config` | Switch provider / model / base URL / API key |
+| `DELETE` | `/api/model/config` | Revert to the `.env` configuration |
+
+The write endpoints return `403 MODEL_CONFIG_LOCKED` when
+`ALLOW_RUNTIME_MODEL_CONFIG=false`. A failed `/test` never changes the active provider.
+
+---
+
 ## 12. Observability
 
 Structured JSON logs on stdout, one line per event, with `request_id` and `session_id`
@@ -437,6 +594,23 @@ LOG_FORMAT=console make dev-backend      # human-readable logs while developing
 ---
 
 ## 13. Troubleshooting
+
+### "I couldn't find anything in the transcripts" for every question
+
+The knowledge base is empty — ingestion has not run. The assistant now says so
+explicitly and prints the command, and `/health` reports it:
+
+```bash
+curl -s localhost:8000/health | python -m json.tool     # look at components.knowledge_base
+docker compose exec backend python -m app.scripts.ingest --stats
+```
+
+If `chunks` is 0, run `make ingest LIMIT=25` (or the `docker compose exec` form above).
+Retrieval finishing in ~60ms is the tell: an indexed corpus takes longer than that.
+
+A *populated* corpus that still refuses one specific question is different, and the
+wording differs too — that is retrieval genuinely finding nothing relevant, which is the
+system working as designed.
 
 | Symptom | Cause | Fix |
 |---|---|---|
