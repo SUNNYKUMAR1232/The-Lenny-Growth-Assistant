@@ -93,26 +93,65 @@ Deeper documents: [PRD](docs/PRD.md) · [architecture.md](docs/architecture.md) 
 ## Architecture
 
 ```
-Next.js UI  ──REST/SSE──▶  FastAPI  ──▶  Controlled Agent Controller
-                                          classify → retrieve → execute → validate
-                                                    │
-                          ┌───────────────┬─────────┴────────┐
-                          ▼               ▼                  ▼
-                      RAG skill      Ship30 skill      Artifact skill
-                          └───────────────┼──────────────────┘
-                                          ▼
-                             Retrieval  vector · keyword · RRF · rerank
-                                          ▼
-                             Evidence Pack  source · chunk · score · url
-                                          ▼
-                             Context Builder  memory | history | evidence
-                                          ▼          (three labelled blocks,
-                             Model Gateway   never blurred together)
-                                          ▼
-                             Grounding Validator  claims ↔ evidence
-                                          ▼
-                                   Final response
+                    ┌──────────────────────────────┐
+                    │         Next.js UI           │
+                    │  chat · sources · artifacts  │
+                    │  memory · model indicator    │
+                    └──────────────┬───────────────┘
+                             REST + SSE
+                                   ▼
+                    ┌──────────────────────────────┐
+                    │           FastAPI            │
+                    │ sessions · chat · artifacts  │
+                    │ memory · ingestion · health  │
+                    └──────────────┬───────────────┘
+                                   ▼
+                    ┌──────────────────────────────┐
+                    │   Controlled Agent Controller│
+                    │ classify → retrieve → execute│
+                    │        → validate            │
+                    └──────────────┬───────────────┘
+              ┌────────────────────┼────────────────────┐
+              ▼                    ▼                    ▼
+        ┌───────────┐       ┌────────────┐       ┌────────────┐
+        │ RAG skill │       │ Ship30     │       │ Artifact   │
+        │           │       │ skill      │       │ skill      │
+        └─────┬─────┘       └─────┬──────┘       └─────┬──────┘
+              └───────────────────┼────────────────────┘
+                                  ▼
+                    ┌──────────────────────────────┐
+                    │      Retrieval Engine        │
+                    │ vector · keyword · RRF fuse  │
+                    │ rerank · episode expansion   │
+                    └──────────────┬───────────────┘
+                                   ▼
+                    ┌──────────────────────────────┐
+                    │        Evidence Pack         │
+                    │ source · chunk · score · url │
+                    └──────────────┬───────────────┘
+        ┌──────────────────────────┼──────────────────────────┐
+        ▼                          ▼                          ▼
+┌───────────────┐        ┌──────────────────┐       ┌──────────────────┐
+│  User Memory  │        │ Conversation     │       │ Transcript       │
+│ personalizes  │        │ context          │       │ knowledge        │
+└───────┬───────┘        └────────┬─────────┘       └────────┬─────────┘
+        └─────────────────────────┼──────────────────────────┘
+                                  ▼
+                       ┌────────────────────┐
+                       │  Context Builder   │  three labelled blocks,
+                       └─────────┬──────────┘  never blurred together
+                                 ▼
+                       ┌────────────────────┐
+                       │   Model Gateway    │  Ollama | Anthropic | OpenAI
+                       └─────────┬──────────┘
+                                 ▼
+                       ┌────────────────────┐
+                       │ Grounding Validator│  claims ↔ evidence
+                       └─────────┬──────────┘
+                                 ▼
+                          Final response
 ```
+
 
 The agent is **controlled, not autonomous**: deterministic routing over a bounded set of
 skills. Every turn walks the same pipeline, so each stage boundary is a log line and a unit
