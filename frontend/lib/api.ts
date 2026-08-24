@@ -12,7 +12,11 @@ import type {
   ChatResponse,
   HealthResponse,
   MemoryRecord,
+  ModelConfigRequest,
+  ModelConfigResponse,
   ModelInfo,
+  ModelOptionsResponse,
+  ModelTestResponse,
   RouteName,
   SessionDetail,
   SessionSummary,
@@ -69,6 +73,24 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 export const api = {
   health: () => request<HealthResponse>("/health"),
   model: () => request<ModelInfo>("/api/model"),
+
+  // ------------------------------------------------- runtime model config
+  modelOptions: () => request<ModelOptionsResponse>("/api/model/options"),
+
+  testModel: (config: ModelConfigRequest) =>
+    request<ModelTestResponse>("/api/model/test", {
+      method: "POST",
+      body: JSON.stringify(config),
+    }),
+
+  setModelConfig: (config: ModelConfigRequest) =>
+    request<ModelConfigResponse>("/api/model/config", {
+      method: "POST",
+      body: JSON.stringify(config),
+    }),
+
+  resetModelConfig: () =>
+    request<ModelConfigResponse>("/api/model/config", { method: "DELETE" }),
 
   listSessions: (externalUserId: string) =>
     request<{ sessions: SessionSummary[]; total: number }>(

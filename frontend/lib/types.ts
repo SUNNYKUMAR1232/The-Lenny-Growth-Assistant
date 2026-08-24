@@ -48,8 +48,54 @@ export interface MemoryRecord extends MemoryUsed {
   source_session_id: string | null;
 }
 
+export interface ModelProviderOption {
+  id: "ollama" | "anthropic" | "openai" | "pi";
+  label: string;
+  needs_api_key: boolean;
+  needs_base_url: boolean;
+  default_base_url: string | null;
+  models: string[];
+  help: string | null;
+  /** Pi drives another provider underneath; empty for direct providers. */
+  backends: string[];
+}
+
+export interface ModelOptionsResponse {
+  configurable: boolean;
+  providers: ModelProviderOption[];
+}
+
+/** Write-only: `api_key` is sent, never received. */
+export interface ModelConfigRequest {
+  provider: "ollama" | "anthropic" | "openai" | "pi";
+  model?: string;
+  /** Pi only: the backend Pi should drive. */
+  agent_backend?: string;
+  base_url?: string;
+  api_key?: string;
+}
+
+export interface ModelConfigResponse {
+  config: {
+    source: "environment" | "runtime";
+    provider?: string;
+    model?: string | null;
+    cloud_provider?: string | null;
+    base_url?: string | null;
+    api_key_set: boolean;
+    api_key_hint?: string | null;
+  };
+  model: ModelInfo;
+}
+
+export interface ModelTestResponse {
+  ok: boolean;
+  detail: string;
+  label: string;
+}
+
 export interface ModelInfo {
-  provider: "ollama" | "cloud" | "stub";
+  provider: "ollama" | "cloud" | "pi" | "stub";
   model: string;
   label: string;
   cloud_provider: string | null;
@@ -58,6 +104,10 @@ export interface ModelInfo {
   available: boolean;
   detail: string | null;
   fallback?: string | null;
+  /** Whether the live config came from `.env` or from the settings panel. */
+  source: "environment" | "runtime";
+  /** False when the deployment forbids runtime model changes. */
+  configurable: boolean;
 }
 
 export interface MessageMetadata {

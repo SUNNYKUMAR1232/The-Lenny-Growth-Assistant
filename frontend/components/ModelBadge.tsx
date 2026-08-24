@@ -13,9 +13,11 @@ import type { HealthResponse, ModelInfo } from "@/lib/types";
 export default function ModelBadge({
   model,
   health,
+  onConfigure,
 }: {
   model: ModelInfo | null;
   health: HealthResponse | null;
+  onConfigure?: () => void;
 }) {
   const [open, setOpen] = useState(false);
 
@@ -36,7 +38,9 @@ export default function ModelBadge({
         title="Active model and dependency status"
       >
         <span className={`h-1.5 w-1.5 rounded-full ${dot}`} aria-hidden />
-        <span className="font-mono">{model.label}</span>
+        {/* Truncated on phones so it cannot squeeze the product name out of
+            the header; the full label is in the panel below. */}
+        <span className="max-w-[7.5rem] truncate font-mono sm:max-w-none">{model.label}</span>
       </button>
 
       {open && (
@@ -64,10 +68,29 @@ export default function ModelBadge({
               {model.fallback ? ` ${model.fallback}` : ""}
             </p>
           )}
-          <p className="mt-2 text-xs text-ink-faint">
-            Switch models with <code className="font-mono">LLM_PROVIDER</code> in{" "}
-            <code className="font-mono">.env</code> and restart the backend.
-          </p>
+          {model.source === "runtime" && (
+            <p className="mt-2 rounded-lg bg-surface-sunken p-2 text-xs text-ink-muted">
+              Configured from this UI. Restarting the backend restores the{" "}
+              <code className="font-mono">.env</code> configuration.
+            </p>
+          )}
+
+          {model.configurable && onConfigure ? (
+            <button
+              className="btn mt-3 w-full justify-center px-2.5 py-1.5 text-xs"
+              onClick={() => {
+                setOpen(false);
+                onConfigure();
+              }}
+            >
+              Configure model / connect a cloud provider
+            </button>
+          ) : (
+            <p className="mt-2 text-xs text-ink-faint">
+              Switch models with <code className="font-mono">LLM_PROVIDER</code> in{" "}
+              <code className="font-mono">.env</code> and restart the backend.
+            </p>
+          )}
         </div>
       )}
     </div>
