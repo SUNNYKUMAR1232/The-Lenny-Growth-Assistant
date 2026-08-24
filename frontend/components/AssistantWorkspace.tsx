@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { api, ApiError, streamMessage } from "@/lib/api";
+import { api, ApiError, isAbortError, streamMessage } from "@/lib/api";
 import type {
   Artifact,
   HealthResponse,
@@ -64,7 +64,25 @@ export default function AssistantWorkspace() {
 
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  // The in-flight turn, so it can be cancelled by Stop or by leaving the
+  // session. Without this a stream outlives the session it belongs to and
+  // writes its answer into whatever session is on screen when it finishes.
+  const abortRef = useRef<AbortController | null>(null);
+  // Read inside stream callbacks, which close over a stale `activeSession`.
+  const activeSessionRef = useRef<string | null>(null);
   const busy = stage !== "idle";
+
+  useEffect(() => {
+    activeSessionRef.current = activeSession;
+  }, [activeSession]);
+
+  const cancelInFlight = useCallback(() => {
+    abortRef.current?.abort();
+    abortRef.current = null;
+  }, []);
+
+  // Leaving the page mid-answer must not leave the request running.
+  useEffect(() => () => abortRef.current?.abort(), []);
 
   // ---------------------------------------------------------------- bootstrap
   useEffect(() => {
@@ -117,6 +135,8 @@ export default function AssistantWorkspace() {
 
   const openSession = useCallback(async (sessionId: string) => {
     try {
+      cancelInFlight();
+      setStage("idle");
       const detail = await api.getSession(sessionId);
       setActiveSession(sessionId);
       setMessages(detail.messages);
@@ -134,9 +154,11 @@ export default function AssistantWorkspace() {
       const apiError = err as ApiError;
       setError({ code: apiError.code, message: apiError.message });
     }
-  }, []);
+  }, [cancelInFlight]);
 
   const newSession = useCallback(async () => {
+    cancelInFlight();
+    setStage("idle");
     try {
       const session = await api.createSession(userId);
       setSessions((current) => [session, ...current]);
@@ -152,10 +174,16 @@ export default function AssistantWorkspace() {
       setError({ code: apiError.code, message: apiError.message });
       return null;
     }
-  }, [userId]);
+  }, [userId, cancelInFlight]);
 
   const removeSession = useCallback(
     async (sessionId: string) => {
+      // Deleting the session a turn is streaming into leaves that turn with
+      // nowhere to land, so cancel before the row disappears.
+      if (sessionId === activeSession) {
+        cancelInFlight();
+        setStage("idle");
+      }
       try {
         await api.deleteSession(sessionId);
         setSessions((current) => current.filter((session) => session.id !== sessionId));
@@ -163,13 +191,14 @@ export default function AssistantWorkspace() {
           setActiveSession(null);
           setMessages([]);
           setArtifact(null);
+          setStreamed("");
         }
       } catch (err) {
         const apiError = err as ApiError;
         setError({ code: apiError.code, message: apiError.message });
       }
     },
-    [activeSession],
+    [activeSession, cancelInFlight],
   );
 
   // -------------------------------------------------------------------- send
@@ -200,8 +229,16 @@ export default function AssistantWorkspace() {
       };
       setMessages((current) => [...current, optimistic]);
 
+      const controller = new AbortController();
+      abortRef.current = controller;
+      // Every state write below belongs to *this* session. If the user has
+      // moved on, the update is dropped rather than painted into whatever is
+      // on screen now.
+      const owns = () => activeSessionRef.current === sessionId && !controller.signal.aborted;
+
       try {
         await streamMessage(sessionId, content, (event) => {
+          if (!owns()) return;
           switch (event.type) {
             case "route":
               setStage("memory");
@@ -249,17 +286,34 @@ export default function AssistantWorkspace() {
           }
         });
       } catch (err) {
-        const apiError = err as ApiError;
-        setError({ code: apiError.code, message: apiError.message });
-        setMessages((current) => current.filter((message) => message.id !== optimistic.id));
+        // A cancel is a user action, not a failure — no error bar for it.
+        if (!isAbortError(err) && owns()) {
+          const apiError = err as ApiError;
+          setError({ code: apiError.code, message: apiError.message });
+          setMessages((current) => current.filter((message) => message.id !== optimistic.id));
+        }
       } finally {
-        setStage("idle");
-        setStreamed("");
+        if (abortRef.current === controller) abortRef.current = null;
+        // Only the turn that still owns the view may reset it; a superseded
+        // turn finishing late must not blank out the newer one.
+        if (activeSessionRef.current === sessionId) {
+          setStage("idle");
+          setStreamed("");
+        }
         void refreshStatus();
       }
     },
     [activeSession, busy, loadSessions, newSession, refreshStatus],
   );
+
+  /** Stop the current answer, keeping whatever has already streamed in. */
+  const stopGenerating = useCallback(() => {
+    if (!abortRef.current) return;
+    cancelInFlight();
+    setStage("idle");
+    setStreamed("");
+    setStageDetail("");
+  }, [cancelInFlight]);
 
   const openArtifact = useCallback(async (artifactId: string) => {
     try {
@@ -467,13 +521,24 @@ export default function AssistantWorkspace() {
                 placeholder="Ask a growth question…"
                 className="max-h-48 min-h-[44px] flex-1 resize-none rounded-xl border border-line bg-surface-raised px-3.5 py-2.5 text-[15px] leading-relaxed placeholder:text-ink-faint focus:border-accent focus:outline-none disabled:opacity-60"
               />
-              <button
-                type="submit"
-                className="btn btn-primary h-[44px] px-4"
-                disabled={busy || !input.trim()}
-              >
-                {busy ? "Working…" : "Send"}
-              </button>
+              {busy ? (
+                <button
+                  type="button"
+                  onClick={stopGenerating}
+                  aria-label="Stop generating the response"
+                  className="btn h-[44px] border border-line px-4 text-ink hover:bg-surface-sunken"
+                >
+                  Stop
+                </button>
+              ) : (
+                <button
+                  type="submit"
+                  className="btn btn-primary h-[44px] px-4"
+                  disabled={!input.trim()}
+                >
+                  Send
+                </button>
+              )}
             </form>
             <p className="mx-auto mt-2 max-w-3xl text-xs text-ink-faint">
               Grounded in transcript evidence. Ask for an essay or an artifact and it renders

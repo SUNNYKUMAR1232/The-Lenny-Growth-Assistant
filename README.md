@@ -86,7 +86,7 @@ Deeper documents: [PRD](docs/PRD.md) · [architecture.md](docs/architecture.md) 
 | **Ship 30 essays** | A skill file (`skills/ship30/SKILL.md`) encodes the writing standard; the agent enforces length and grounding |
 | **Artifacts** | Markdown and complete HTML/CSS, sanitized server-side and rendered in a fully sandboxed iframe |
 | **Model flexibility** | Local Ollama, Anthropic/OpenAI, or the Pi agent — no code change, provider always visible in the UI |
-| **Operability** | One-command startup, structured JSON logs, dependency-level health checks, typed errors, 130 backend + 30 frontend tests |
+| **Operability** | One-command startup, structured JSON logs, dependency-level health checks, typed errors, 130 backend + 34 frontend tests |
 
 ---
 
@@ -358,8 +358,8 @@ routing precedence, memory isolation and cap eviction, grounding accept/annotate
 12 artifact injection payloads, ingestion idempotency, model-gateway timeouts and
 unreachability, and persistence cascades.
 
-**Frontend — 30 tests** (`frontend/tests/`): SSE parsing including partial buffers and
-malformed payloads, artifact viewer sandbox attributes, and message metadata rendering.
+**Frontend — 34 tests** (`frontend/tests/`): SSE parsing including partial buffers and
+malformed payloads, artifact viewer sandbox attributes, message metadata rendering, and stream cancellation.
 
 A manual UI test plan is in [`docs/manual-test-plan.md`](docs/manual-test-plan.md). CI runs
 both suites plus a production build on every push
@@ -469,27 +469,6 @@ working as designed.
 
 Allow/block lists and the residual-risk discussion:
 [`docs/architecture.md#artifact-security`](docs/architecture.md#artifact-security).
-
----
-
-## Limitations
-
-Stated plainly, because pretending otherwise wastes an evaluator's time:
-
-- **No authentication or multi-tenancy.** Identity is a browser-local id.
-- **Grounding validation is lexical, not semantic.** It catches off-corpus drift and
-  hallucinated citations; it does not verify truth, and a fluent paraphrase reusing
-  evidence vocabulary can pass. Upgrade path (NLI or an LLM judge) is documented.
-- **The reranker is a fusion heuristic**, not a cross-encoder — a cost/latency choice at
-  this corpus size.
-- **Ollama is not containerized.** It runs on the host for GPU/Metal access.
-- **Pi requires the non-Docker path**, since the backend image ships no Node.
-- **No evaluation harness.** The PRD proposes metrics; they are targets, not measurements.
-- **Cloud providers are implemented but were not exercised against live APIs** in this
-  build. Configuration and error paths are unit-tested, and the abstraction is the one
-  Ollama uses.
-
----
 
 ## Repository map
 

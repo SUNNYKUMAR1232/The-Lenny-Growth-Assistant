@@ -40,6 +40,15 @@ export class ApiError extends Error {
   }
 }
 
+/**
+ * True when a request ended because someone cancelled it — Stop, a session
+ * switch, or unmount — rather than because anything failed. Callers use this
+ * to stay silent instead of showing an error the user caused on purpose.
+ */
+export function isAbortError(err: unknown): boolean {
+  return err instanceof DOMException ? err.name === "AbortError" : (err as Error)?.name === "AbortError";
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   let response: Response;
   try {
@@ -214,7 +223,10 @@ export async function streamMessage(
       }),
       signal: options.signal,
     });
-  } catch {
+  } catch (err) {
+    // A deliberate cancel must stay distinguishable from a dead API: reporting
+    // "can't reach the API" after the user pressed Stop is a lie.
+    if (isAbortError(err)) throw err;
     throw new ApiError("NETWORK_ERROR", `Can't reach the API at ${API_BASE}.`, 0);
   }
 
@@ -231,12 +243,20 @@ export async function streamMessage(
   const decoder = new TextDecoder();
   let buffer = "";
 
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    const { events, rest } = parseSseChunk(buffer);
-    buffer = rest;
-    events.forEach(onEvent);
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      // Stop delivering events the moment a cancel lands, so a late chunk
+      // already in the pipe cannot be written into a session the user left.
+      if (options.signal?.aborted) break;
+      buffer += decoder.decode(value, { stream: true });
+      const { events, rest } = parseSseChunk(buffer);
+      buffer = rest;
+      events.forEach(onEvent);
+    }
+  } finally {
+    // Releases the connection whether we finished, aborted, or threw.
+    await reader.cancel().catch(() => {});
   }
 }
